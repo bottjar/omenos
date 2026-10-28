@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OmenOS — Pasang Driver NVIDIA
+Comment=Deteksi GPU lalu pasang driver NVIDIA yang cocok (otomatis)
+Exec=sudo /usr/local/bin/omen-setup --nvidia=auto
+Icon=preferences-system
+Terminal=true
+Categories=System;Settings;HardwareSettings;
+Keywords=nvidia;gpu;driver;omen;

@@ -1,0 +1,31 @@
+# Tema GRUB OmenOS. Dipasang oleh omen-setup hanya kalau sistem memakai GRUB.
+title-text: ""
+desktop-image: "background.png"
+desktop-color: "#07070a"
+terminal-font: "DejaVu Sans Mono Regular 16"
+
++ boot_menu {
+    left = 52%
+    top = 28%
+    width = 42%
+    height = 50%
+    item_font = "DejaVu Sans Regular 18"
+    item_color = "#b9b9c3"
+    selected_item_color = "#ffffff"
+    item_height = 40
+    item_spacing = 10
+    item_padding = 8
+    icon_width = 0
+    icon_height = 0
+}
+
++ label {
+    left = 6%
+    top = 86%
+    width = 40%
+    height = 8%
+    align = "left"
+    color = "#e00012"
+    font = "DejaVu Sans Bold 14"
+    text = "OMENOS · ARCH LINUX"
+}

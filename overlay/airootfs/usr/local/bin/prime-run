@@ -19,7 +19,8 @@ fi
 if [[ ! -e /dev/nvidia0 ]]; then
   echo "prime-run: /dev/nvidia0 tidak ada — driver NVIDIA belum aktif." >&2
   echo "  cek: omen-control status | nvidia-smi" >&2
-  echo "  pasang: sudo omen-setup --gpu=legacy   (Pascal: 15-dc0000)" >&2
+  echo "  pasang: sudo omen-setup --nvidia=legacy   (Pascal: 15-dc0000)" >&2
+  echo "          sudo omen-setup --nvidia=auto     (deteksi otomatis)" >&2
 fi
 
 export __NV_PRIME_RENDER_OFFLOAD=1

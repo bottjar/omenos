@@ -18,10 +18,13 @@ Yang diuji:
   7. pelrun rgb_zones         -> warna saja, brightness/animasi ditolak
   8. hanya platform_profile   -> profil termal sebagai kontrol fan
   9. decide_fan()             -> histeresis & prioritas safety (fungsi murni)
+ 10. aset tema & konfigurasi  -> SVG/JSON/KConfig SDDM, Plasma, GRUB
 """
 from __future__ import annotations
 
+import configparser
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -29,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -337,6 +341,65 @@ def test_policy(tmp: Path):
     check("hotspot pilih CPU", mod.hotspot(temps), 71.0)
 
 
+def test_assets() -> None:
+    """Aset tema tidak butuh hardware, tapi satu SVG rusak = build tetap jalan
+    dengan layar hitam. Jadi validasi di sini, bukan setelah ISO 3,8 GB jadi."""
+    print("varian 10: aset tema & konfigurasi")
+    overlay = REPO / "overlay"
+    for p in sorted(overlay.rglob("*.svg")):
+        try:
+            ET.parse(p)
+            ok, err = True, ""
+        except Exception as exc:  # noqa: BLE001 - pesan apa pun berguna
+            ok, err = False, str(exc)
+        check_true(f"SVG valid {p.name}", ok, err)
+
+    for p in sorted(overlay.rglob("*.json")):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            ok, err = bool(data), ""
+        except Exception as exc:  # noqa: BLE001
+            ok, err = False, str(exc)
+        check_true(f"JSON valid {p.name}", ok, err)
+
+    colors = configparser.ConfigParser(interpolation=None)
+    colors.read(overlay / "airootfs/usr/share/color-schemes/OmenOS.colors", encoding="utf-8")
+    check("skema warna OmenOS", colors.get("General", "ColorScheme", fallback=""), "OmenOS")
+    check("aksen seleksi merah",
+          colors.get("Colors:Selection", "BackgroundNormal", fallback=""), "224,0,18")
+
+    sddm_cfg = configparser.ConfigParser(interpolation=None)
+    sddm_cfg.read(overlay / "airootfs/etc/sddm.conf.d/20-omenos-theme.conf", encoding="utf-8")
+    check("SDDM memakai tema omenos", sddm_cfg.get("Theme", "Current", fallback=""), "omenos")
+
+    sddm_theme = configparser.ConfigParser(interpolation=None)
+    sddm_theme.read(overlay / "airootfs/usr/share/sddm/themes/omenos/theme.conf", encoding="utf-8")
+    check("background SDDM", sddm_theme.get("General", "background", fallback=""), "background.png")
+
+    lf = overlay / "airootfs/usr/share/plasma/look-and-feel/org.omenos.desktop"
+    defaults = (lf / "contents/defaults").read_text(encoding="utf-8")
+    check_true("LookAndFeelPackage di defaults", "LookAndFeelPackage=org.omenos.desktop" in defaults)
+    check_true("wallpaper Plasma di defaults",
+               "Image=/usr/share/omenos/wallpapers/omenos-1920x1080.png" in defaults)
+
+    meta = json.loads((lf / "metadata.json").read_text(encoding="utf-8"))
+    check("metadata LnF id", meta.get("KPlugin", {}).get("Id", ""), "org.omenos.desktop")
+    check("metadata splash", meta.get("X-Plasma-Splash", ""), "splash/Splash.qml")
+
+    qml = (overlay / "airootfs/usr/share/sddm/themes/omenos/Main.qml").read_text(encoding="utf-8")
+    check_true("QML login memakai sddm.login", "sddm.login(" in qml)
+    check("kurung QML seimbang", qml.count("{"), qml.count("}"))
+
+    gpu_conf = (overlay / "airootfs/etc/omen/gpu.conf").read_text(encoding="utf-8")
+    check_true("gpu.conf punya MODE", re.search(r"^MODE=(auto|legacy|open|none)$", gpu_conf, re.M) is not None)
+
+    setup = (overlay / "airootfs/usr/local/bin/omen-setup").read_text(encoding="utf-8")
+    for mode in ("auto", "legacy", "open", "none", "remove", "status"):
+        check_true(f"omen-setup mengenal --nvidia {mode}", f"--nvidia" in setup and mode in setup)
+    check_true("hanya blacklist nouveau bila driver terpasang",
+               "nouveau TIDAK diblokir" in setup)
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="omen-selftest-"))
     try:
@@ -344,6 +407,8 @@ def main() -> int:
         test_policy(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    test_assets()
 
     print()
     if failures:

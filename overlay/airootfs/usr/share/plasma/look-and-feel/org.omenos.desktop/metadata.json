@@ -1,0 +1,18 @@
+{
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "OmenOS"
+      }
+    ],
+    "Category": "Plasma Look And Feel",
+    "Description": "Tema gelap OmenOS: hitam sasis OMEN, aksen merah logo, wallpaper berlian.",
+    "Id": "org.omenos.desktop",
+    "License": "CC0-1.0",
+    "Name": "OmenOS",
+    "Version": "1.0"
+  },
+  "X-Plasma-APIVersion": "2",
+  "X-Plasma-MainScript": "defaults",
+  "X-Plasma-Splash": "splash/Splash.qml"
+}

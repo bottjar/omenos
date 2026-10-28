@@ -10,6 +10,7 @@ tidak lebih baik untuk kebutuhan ini. Yang menentukan kualitas di sini adalah
 
 Detail model dan keputusan teknis: **[docs/MODEL-15-dc00036tx.md](docs/MODEL-15-dc00036tx.md)**.
 Hasil bongkar aplikasi OMEN (jalur fan/RGB ke firmware): **[docs/OMEN-APP-RE.md](docs/OMEN-APP-RE.md)**.
+Tema hitam/merah OMEN (SDDM, Plasma, GRUB): **[docs/THEME.md](docs/THEME.md)**.
 Status terakhir, link ISO, dan cara melanjutkan pekerjaan di mesin lain:
 **[HANDOFF.md](HANDOFF.md)**.
 
@@ -80,7 +81,8 @@ Di Windows: gabungkan dengan `copy /b omenos.iso.part-00+omenos.iso.part-01 omen
 |---|---|
 | Basis | Arch Linux rolling, kernel `linux` + `linux-lts` (cadangan) |
 | Desktop | KDE Plasma + SDDM (Wayland) |
-| NVIDIA | Pascal/15-dc → `nvidia-580xx-dkms` dari AUR (otomatis); Turing+ → `nvidia-open-dkms` |
+| Tema | OmenOS: hitam `#09090b` + merah logo `#e00012`, mark berlian, SDDM + Plasma + GRUB |
+| NVIDIA | Pascal/15-dc → `nvidia-580xx-dkms` dari AUR (otomatis); Turing+ → `nvidia-open-dkms`; opsi `--nvidia=` |
 | Fan | `omen-control daemon-fan` — backend `pwm-boost` (auto/max), `pwm-manual`, `platform-profile`, atau `ec-profile` (84DA/84DB) |
 | RGB | `omen-control daemon-rgb` — 4 zona, LED kernel / TUXOV / pelrun / omen-rgb-keyboard |
 | Hybrid GPU | `prime-run` sendiri (tanpa paket `nvidia-prime`) |
@@ -110,6 +112,39 @@ dan risiko tulis EC) ada di [docs/OMEN-APP-RE.md](docs/OMEN-APP-RE.md) §7.
 
 Kalau tidak ada satu pun, daemon berhenti dengan pesan jelas (exit 0, bukan
 restart-loop), bukan gagal diam-diam.
+
+### Driver NVIDIA — otomatis, tapi bisa dipilih
+
+Driver **tidak** ditanam di ISO. Boot pertama menjalankan `omen-setup`; mode
+default dibaca dari `/etc/omen/gpu.conf` (ditulis `omen-install`):
+
+```bash
+# saat instalasi: pilih sekarang
+sudo omen-install /dev/nvme0n1 --nvidia=auto     # default
+sudo omen-install /dev/nvme0n1 --nvidia=legacy   # Pascal/Maxwell/Volta
+sudo omen-install /dev/nvme0n1 --nvidia=open     # Turing ke atas
+sudo omen-install /dev/nvme0n1 --nvidia=none     # nouveau saja
+
+# kapan saja setelah terpasang
+sudo omen-setup --nvidia=auto      # deteksi + pasang yang cocok
+sudo omen-setup --nvidia=status    # GPU, paket, DKMS, nvidia-smi
+sudo omen-setup --nvidia=legacy    # paksa 580xx (AUR, 5-15 menit)
+sudo omen-setup --nvidia=open      # paksa nvidia-open-dkms
+sudo omen-setup --nvidia=remove    # lepas driver, kembali ke nouveau
+```
+
+Deteksi memakai PCI ID, bukan nama pemasaran: `10de:1c8c` (GTX 1050 Ti) →
+Pascal → `nvidia-580xx-*`; `1e/1f/20-2f` → Turing/Ampere/Ada →
+`nvidia-open-dkms`. Kalau build driver gagal, **nouveau tidak diblokir** supaya
+grafis tetap hidup. DKMS diverifikasi sebelum `omen-setup` mengaku sukses.
+Menu KDE **OmenOS — Pasang Driver NVIDIA** menjalankan alur `auto` yang sama.
+
+### Tema OmenOS
+
+Hitam sasis + merah logo (`#e00012`), mark berlian empat shard, wallpaper
+1920×1080. Tema dipasang untuk pengguna baru lewat `/etc/skel`, tampil di SDDM,
+Plasma (warna + wallpaper + splash), dan GRUB bila GRUB yang dipakai. systemd-boot
+tidak punya mesin tema. Detail dan cara mengganti: **[docs/THEME.md](docs/THEME.md)**.
 
 ---
 
@@ -195,6 +230,7 @@ Di QEMU tidak ada hardware Omen, jadi `omen-control status` akan melaporkan back
 ```bash
 lsblk                        # pastikan nama disk benar
 omen-install /dev/nvme0n1    # MENGHAPUS SELURUH DISK, minta konfirmasi "ERASE"
+# opsional: --nvidia=auto|legacy|open|none, --data-disk /dev/sda
 ```
 
 Installer mempartisi GPT (1 GiB ESP + ext4), memasang paket, menyalin
@@ -216,7 +252,8 @@ untuk `linux` dan `linux-lts`.
    - deteksi GPU: Pascal → build `nvidia-580xx-*` dari AUR (5–15 menit), Turing+ → `nvidia-open-dkms`
    - aktifkan driver RGB (kernel → TUXOV → pelrun)
    - tulis `nvidia-drm.modeset=1`, `mem_sleep_default=deep` (board 84DA/84DB)
-   - rebuild initramfs untuk kedua kernel, aktifkan service, simpan `omen-probe`
+   - rebuild initramfs untuk kedua kernel, aktifkan service, terapkan tema GRUB
+     (kalau bootloader GRUB), simpan `omen-probe`
 
 Kalau grafis bermasalah, pilih entri **OmenOS (linux-lts)** di boot menu.
 
@@ -258,23 +295,30 @@ omen-os/
 │  ├─ profiledef.sh            # nama ISO, bootmode, permission
 │  ├─ packages.x86_64          # daftar paket (tanpa driver NVIDIA)
 │  └─ airootfs/
-│     ├─ root/omen-customize.sh     # dijalankan saat build
-│     ├─ etc/omen/{fan,rgb}.conf
+│     ├─ root/omen-customize.sh     # dijalankan saat build (tema + overlay tar)
+│     ├─ etc/omen/{fan,rgb,gpu}.conf
 │     ├─ etc/modprobe.d/nvidia.conf
 │     ├─ etc/systemd/zram-generator.conf
 │     ├─ etc/systemd/system/omen-{fan,rgb}.service
+│     ├─ etc/sddm.conf.d/20-omenos-theme.conf
+│     ├─ etc/skel/.config/          # tema default pengguna baru (Plasma)
+│     ├─ usr/share/omenos/          # mark, wallpaper SVG, tema GRUB
+│     ├─ usr/share/sddm/themes/omenos/
+│     ├─ usr/share/color-schemes/OmenOS.colors
+│     ├─ usr/share/plasma/look-and-feel/org.omenos.desktop/
 │     └─ usr/local/bin/
 │        ├─ omen-control        # CLI + daemon fan/RGB
-│        ├─ omen-setup          # konfigurasi boot pertama
-│        ├─ omen-install        # installer disk
+│        ├─ omen-setup          # konfigurasi boot pertama + driver NVIDIA
+│        ├─ omen-install        # installer disk (--nvidia=...)
 │        ├─ omen-aur            # build paket AUR tanpa helper
 │        ├─ omen-probe          # dump diagnostik
 │        └─ prime-run           # offload ke dGPU
-├─ tests/selftest.py           # uji tanpa hardware
+├─ tests/selftest.py           # uji tanpa hardware (termasuk validasi tema)
 └─ docs/
    ├─ HARDWARE.md              # matriks model, quirk ACPI, risiko
    ├─ MODEL-15-dc00036tx.md    # detail model ini
-   └─ OMEN-APP-RE.md           # hasil bongkar aplikasi OMEN (fan/RGB/firmware)
+   ├─ OMEN-APP-RE.md           # hasil bongkar aplikasi OMEN (fan/RGB/firmware)
+   └─ THEME.md                 # palet, aset, cara mengubah tema
 ```
 
 ---
@@ -287,7 +331,7 @@ Boot ke **linux-lts**, lalu:
 ```bash
 lspci -nn | grep -i nvidia        # pastikan GPU Pascal (10de:1bxx/1cxx)
 pacman -Q | grep -i nvidia       # harus 580xx; kalau ada nvidia-utils 590, hapus
-sudo omen-setup --gpu=legacy
+sudo omen-setup --nvidia=legacy
 ```
 
 Jangan memasang `nvidia`, `nvidia-open-dkms`, `nvidia-utils`, atau `nvidia-prime`:
@@ -316,6 +360,29 @@ Pastikan `mem_sleep_default=deep` ada di entri boot dan
 `NVreg_PreserveVideoMemoryAllocations=1` aktif. Service `nvidia-suspend`,
 `nvidia-resume`, `nvidia-hibernate` diaktifkan `omen-setup`.
 
+**Driver NVIDIA tidak terpasang / salah generasi**
+
+```bash
+omen-setup --nvidia=status          # GPU, paket, DKMS, nvidia-smi
+sudo omen-setup --nvidia=auto       # deteksi ulang
+sudo omen-setup --nvidia=remove     # lepas dan kembali ke nouveau
+```
+
+Kalau `nvidia-smi` gagal padahal paket terpasang, cek `dkms status` dan
+`sudo mkinitcpio -P`; jangan memasang `nvidia-utils` 590 di Pascal.
+
+**Layar login SDDM hitam setelah tema baru**
+
+TTY `Ctrl+Alt+F2`, lalu kembalikan ke Breeze:
+
+```bash
+sudo sed -i 's/^Current=.*/Current=breeze/' /etc/sddm.conf.d/20-omenos-theme.conf
+sudo systemctl restart sddm
+```
+
+Wallpaper Plasma bisa diganti tanpa logout:
+`plasma-apply-wallpaperimage /usr/share/omenos/wallpapers/omenos-1920x1080.png`.
+
 **AUR gagal dibangun**
 `omen-aur` memakai `aurbuilder` dan hanya mengizinkan `sudo pacman`. Kalau gagal,
 cek koneksi dan `dkms status`. Build ulang aman (idempoten).
@@ -332,7 +399,8 @@ kunci sendiri dengan `sbctl` lalu tanda tangani `nvidia*.ko` dan modul RGB.
 python3 tests/selftest.py
 ```
 
-Selftest membuat sysfs palsu untuk 11 skenario: PWM manual (`pwm1_max`), auto/max
+Selftest membuat sysfs palsu untuk 11 skenario, lalu memvalidasi aset tema
+(SVG, JSON, KConfig, QML) supaya satu berkas rusak tidak lolos ke ISO 3,8 GB: PWM manual (`pwm1_max`), auto/max
 15-dc (`pwm1` + `pwm1_enable`), driver yang menolak tulis, kernel lama
 (`pwm1_enable` saja), TUXOV (LED 4 zona + PWM manual tanpa `pwm1_max`), LED
 tunggal kernel, tanpa backend fan, board EC-only 84DA (`ec_sys` 0x95), pelrun
@@ -357,6 +425,8 @@ Hasil yang diverifikasi:
 - pelrun: warna `rgb_zones` berfungsi; `brightness`/`animation` ditolak dengan pesan
 - Histeresis boost: ON 76 °C, OFF 68 °C; safety 93 °C, release 87 °C
 - Tanpa backend → exit code ≠ 0 dengan pesan jelas
+- Aset tema: semua SVG/JSON valid, skema `OmenOS` merah `#e00012`, SDDM
+  `Current=omenos`, splash, wallpaper, dan `gpu.conf` terbaca
 
 Skrip `.sh` sudah lolos `bash -n` dan `shellcheck -S warning`. Yang **belum**
 teruji: boot ISO di hardware Omen sungguhan dan pembangunan ISO itu sendiri.
@@ -367,6 +437,8 @@ teruji: boot ISO di hardware Omen sungguhan dan pembangunan ISO itu sendiri.
 
 - Tidak ada GUI fan/RGB (CLI + TOML).
 - Undervolt CPU tidak disertakan (`intel-undervolt` bisa ditambah, tapi rawan).
+- Tema SDDM/Plasma sudah ada, tetapi belum diuji di layar fisik unit ini;
+  systemd-boot tidak bertema (hanya judul entri + timeout).
 - Dukungan fan manual TUXOV pada 15-dc belum diketahui; daemon menguji saat start.
 - ISO belum diuji di unit 15-dc00036tx fisik. Profil sekarang sudah dicocokkan
   dengan hardware unit tersebut (board 84DA, GTX 1050 Ti, AC 9560, ALC295,

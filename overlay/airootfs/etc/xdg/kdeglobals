@@ -1,0 +1,10 @@
+[General]
+ColorScheme=OmenOS
+Name=OmenOS
+
+[KDE]
+LookAndFeelPackage=org.omenos.desktop
+SingleClick=false
+
+[Icons]
+Theme=breeze

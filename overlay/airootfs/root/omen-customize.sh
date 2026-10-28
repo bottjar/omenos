@@ -37,6 +37,41 @@ Session=plasma
 Relogin=true
 EOF
 
+# --- tema OmenOS: mark berlian, wallpaper, SDDM, Plasma, GRUB.
+# Sumber tetap SVG (mudah diubah); PNG dibuat di sini karena SDDM/GRUB lebih
+# aman memakai raster dan Plasma tidak perlu bergantung pada plugin SVG.
+THEME=/usr/share/omenos
+SDDM_THEME=/usr/share/sddm/themes/omenos
+PLASMA_THEME=/usr/share/plasma/look-and-feel/org.omenos.desktop
+install -d "$THEME/brand" "$THEME/wallpapers" "$THEME/grub" \
+           "$SDDM_THEME" "$PLASMA_THEME/contents/splash/images" \
+           /usr/share/color-schemes /usr/share/applications
+if command -v rsvg-convert >/dev/null 2>&1; then
+  rsvg-convert -w 512 -h 512 "$THEME/brand/omenos-mark.svg" \
+    -o "$THEME/brand/omenos-mark.png"
+  rsvg-convert -w 1920 -h 1080 "$THEME/wallpapers/omenos-wallpaper.svg" \
+    -o "$THEME/wallpapers/omenos-1920x1080.png"
+  rsvg-convert -w 2560 -h 1440 "$THEME/wallpapers/omenos-sddm.svg" \
+    -o "$SDDM_THEME/background.png"
+  rsvg-convert -w 1920 -h 1080 "$THEME/wallpapers/omenos-grub.svg" \
+    -o "$THEME/grub/background.png"
+  rsvg-convert -w 256 -h 256 "$THEME/brand/omenos-mark.svg" \
+    -o "$SDDM_THEME/omenos-mark.png"
+else
+  echo "peringatan: rsvg-convert tidak ada; memakai SVG langsung untuk SDDM"
+  cp -f "$THEME/wallpapers/omenos-sddm.svg" "$SDDM_THEME/background.svg"
+  sed -i 's/^background=.*/background=background.svg/' "$SDDM_THEME/theme.conf"
+fi
+chmod 644 "$THEME"/brand/* "$THEME"/wallpapers/* "$THEME"/grub/* 2>/dev/null || true
+chmod 644 "$SDDM_THEME"/* 2>/dev/null || true
+
+# Salin tema ke user live (skel sudah berisi konfigurasi yang sama).
+if id omen >/dev/null 2>&1; then
+  install -d -m 700 -o omen -g omen /home/omen/.config
+  cp -a /etc/skel/.config/. /home/omen/.config/ 2>/dev/null || true
+  chown -R omen:omen /home/omen/.config
+fi
+
 # --- layanan yang harus hidup di live session
 for svc in NetworkManager.service bluetooth.service sddm.service \
            omen-fan.service omen-rgb.service power-profiles-daemon.service \
@@ -47,6 +82,9 @@ done
 # --- overlay untuk omen-install (dipasang ke sistem hasil instalasi)
 FILES=(
   etc/omen
+  etc/skel
+  etc/xdg/kdeglobals
+  etc/sddm.conf.d/20-omenos-theme.conf
   etc/modprobe.d/nvidia.conf
   etc/modprobe.d/omen-audio.conf
   etc/modprobe.d/omen-wifi.conf
@@ -54,6 +92,11 @@ FILES=(
   etc/systemd/system/omen-fan.service
   etc/systemd/system/omen-rgb.service
   etc/systemd/zram-generator.conf
+  usr/share/omenos
+  usr/share/sddm/themes/omenos
+  usr/share/color-schemes/OmenOS.colors
+  usr/share/plasma/look-and-feel/org.omenos.desktop
+  usr/share/applications/omen-nvidia.desktop
   usr/local/bin/omen-control
   usr/local/bin/omen-probe
   usr/local/bin/omen-setup

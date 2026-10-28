@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="-115 -115 230 230" role="img" aria-label="OmenOS">
+  <defs>
+    <!-- Satu gradien userSpaceOnUse supaya keempat shard punya warna senada. -->
+    <linearGradient id="shard" gradientUnits="userSpaceOnUse" x1="-100" y1="-100" x2="100" y2="100">
+      <stop offset="0" stop-color="#ff3a4c"/>
+      <stop offset="0.45" stop-color="#e00012"/>
+      <stop offset="1" stop-color="#780007"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#e00012" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#e00012" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#e00012" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <circle cx="0" cy="0" r="112" fill="url(#halo)"/>
+
+  <!-- Mark OMENOS: empat shard berlian, diadaptasi dari bahasa visual OMEN. -->
+  <g fill="url(#shard)">
+    <path d="M12 -88 L88 -12 L47.52 -6.48 L6.48 -47.52 Z"/>
+    <path d="M88 12 L12 88 L6.48 47.52 L47.52 6.48 Z"/>
+    <path d="M-12 88 L-88 12 L-47.52 6.48 L-6.48 47.52 Z"/>
+    <path d="M-88 -12 L-12 -88 L-6.48 -47.52 L-47.52 -6.48 Z"/>
+  </g>
+</svg>

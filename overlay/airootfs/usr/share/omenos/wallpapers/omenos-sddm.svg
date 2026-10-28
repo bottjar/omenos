@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1440" viewBox="0 0 2560 1440">
+  <defs>
+    <radialGradient id="base" cx="48%" cy="44%" r="78%">
+      <stop offset="0" stop-color="#200006"/>
+      <stop offset="0.5" stop-color="#0c0c10"/>
+      <stop offset="1" stop-color="#050507"/>
+    </radialGradient>
+    <linearGradient id="shard" gradientUnits="userSpaceOnUse" x1="-100" y1="-100" x2="100" y2="100">
+      <stop offset="0" stop-color="#ff3a4c"/>
+      <stop offset="0.45" stop-color="#e00012"/>
+      <stop offset="1" stop-color="#780007"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="2560" height="1440" fill="url(#base)"/>
+
+  <!-- Mark raksasa di sisi kanan, di belakang kartu login. -->
+  <g transform="translate(1990 700) scale(5.2)" opacity="0.09" fill="url(#shard)">
+    <path d="M12 -88 L88 -12 L47.52 -6.48 L6.48 -47.52 Z"/>
+    <path d="M88 12 L12 88 L6.48 47.52 L47.52 6.48 Z"/>
+    <path d="M-12 88 L-88 12 L-47.52 6.48 L-6.48 47.52 Z"/>
+    <path d="M-88 -12 L-12 -88 L-6.48 -47.52 L-47.52 -6.48 Z"/>
+  </g>
+
+  <g stroke="#e00012" stroke-width="1.5" opacity="0.06">
+    <path d="M-200 1300 L900 -100"/>
+    <path d="M-40 1400 L1060 0"/>
+    <path d="M1880 1540 L2600 820"/>
+    <path d="M2060 1540 L2700 900"/>
+  </g>
+
+  <text x="110" y="1290" fill="#f5f5f7" font-family="Noto Sans, DejaVu Sans, sans-serif"
+        font-size="46" font-weight="bold" letter-spacing="14">OMENOS</text>
+  <text x="114" y="1332" fill="#6f6f7a" font-family="Noto Sans, DejaVu Sans, sans-serif"
+        font-size="14" letter-spacing="6">OMEN 15 &#183; ARCH LINUX</text>
+
+  <rect x="0" y="0" width="8" height="1440" fill="#e00012" opacity="0.85"/>
+</svg>

@@ -1,33 +1,46 @@
 #!/usr/bin/env bash
 # omen-setup — konfigurasi OmenOS setelah instalasi (butuh internet).
 #
-#   omen-setup [--gpu=auto|legacy|open|none]
+#   omen-setup [--nvidia=auto|legacy|open|none|remove|status]
 #              [--rgb-driver=auto|stock|tuxov|pelrun|none]
 #              [--no-upgrade] [--skip-rgb] [--skip-fan]
 #
-# Kenapa ada dua jalur GPU:
-#   Pascal/Maxwell/Volta (GTX 10xx, 15-dc0000) -> driver 580xx (AUR), karena
-#   Arch 590+ dan nvidia-open hanya mendukung Turing ke atas.
-#   Turing ke atas (RTX 20xx+) -> nvidia-open-dkms resmi.
+# --nvidia (alias lama: --gpu):
+#   auto    deteksi otomatis. Pascal/Maxwell/Volta -> nvidia-580xx-dkms (AUR),
+#           Turing ke atas -> nvidia-open-dkms (repo resmi).
+#   legacy  paksa 580xx.  open  paksa nvidia-open.  none  lewati.
+#   remove  lepas driver NVIDIA dan kembalikan nouveau.
+#   status  tampilkan GPU, mode deteksi, paket, DKMS, dan nvidia-smi.
 #
-# Aman dijalankan ulang: setiap langkah idempoten.
+# Tanpa --nvidia, mode dibaca dari /etc/omen/gpu.conf (ditulis omen-install).
+# Boot pertama memakai mode itu; kalau tidak ada, auto. Aman dijalankan ulang.
 set -uo pipefail
 
-GPU=auto
+NVIDIA=auto
+NVIDIA_SET=0
 RGB_DRIVER=auto
 DO_UPGRADE=1
 SKIP_RGB=0
 SKIP_FAN=0
-for a in "$@"; do
-  case "$a" in
-    --gpu=*) GPU="${a#*=}" ;;
-    --rgb-driver=*) RGB_DRIVER="${a#*=}" ;;
+
+usage() {
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --nvidia=*|--gpu=*) NVIDIA="${1#*=}"; NVIDIA_SET=1 ;;
+    --nvidia|--gpu) NVIDIA="${2:-}"; NVIDIA_SET=1; shift ;;
+    --rgb-driver=*) RGB_DRIVER="${1#*=}" ;;
     --no-upgrade) DO_UPGRADE=0 ;;
     --skip-rgb) SKIP_RGB=1 ;;
     --skip-fan) SKIP_FAN=1 ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
-    *) echo "argumen tidak dikenal: $a"; exit 2 ;;
+    --no-nvidia) NVIDIA=none; NVIDIA_SET=1 ;;
+    -h|--help) usage ;;
+    *) echo "argumen tidak dikenal: $1"; exit 2 ;;
   esac
+  shift
 done
 
 [[ $EUID -eq 0 ]] || { echo "jalankan dengan sudo"; exit 1; }
@@ -43,7 +56,124 @@ log "hardware: $VENDOR $MODEL (board $BOARD, BIOS $BIOS)"
 [[ "$VENDOR" == *HP* || "$VENDOR" == *Hewlett* ]] || \
   warn "ini bukan mesin HP. Kurva fan/RGB tidak akan cocok."
 
-# ------------------------------------------------------------ 0. multilib + sinkron
+# --------------------------------------------------------------- 0. deteksi GPU
+GPU_LINE=$(lspci -nn 2>/dev/null | grep -Ei 'vga|3d|display' | grep -i nvidia || true)
+
+detect_gpu() {
+  local id
+  [[ -z "$GPU_LINE" ]] && { echo none; return; }
+
+  # PCI ID lebih dipercaya daripada nama pemasaran ("GTX 1050 Ti" vs "GTX 16").
+  id=$(grep -oE '\[10de:[0-9a-fA-F]{4}\]' <<<"$GPU_LINE" | head -n1 | \
+       sed -E 's/.*10de:([0-9a-fA-F]{4}).*/\1/' | tr 'A-F' 'a-f')
+  if [[ -n "$id" ]]; then
+    case "$id" in
+      # Fermi/Kepler: branch 580 sudah tidak mendukung. Jangan pasang paksa.
+      0d??|0e??|0f??|10??|11??|12??) echo unsupported; return ;;
+      # Maxwell, Pascal, Volta: nvidia-580xx (AUR).
+      13??|17??|1b??|1c??|1d??) echo legacy; return ;;
+      # Turing (TU10x/TU11x), Ampere, Ada: nvidia-open-dkms.
+      1e??|1f??|20??|21??|22??|23??|24??|25??|26??|27??|28??|29??|2[0-9a-f]??) echo open; return ;;
+    esac
+  fi
+
+  # Cadangan kalau lspci memakai nama tanpa PCI ID yang dikenal.
+  if grep -qiE 'RTX|GTX 16|Turing|Quadro RTX' <<<"$GPU_LINE"; then
+    echo open; return
+  fi
+  if grep -qiE 'GTX (7|8|9|10)[0-9]|GT 10[0-9]|MX[0-9]|Quadro [P][0-9]' <<<"$GPU_LINE"; then
+    echo legacy; return
+  fi
+  if grep -qiE 'GTX (4|5|6)[0-9]|GT [0-9]{3}|Quadro [KM][0-9]' <<<"$GPU_LINE"; then
+    echo unsupported; return
+  fi
+  echo unknown
+}
+
+if [[ $NVIDIA_SET -eq 0 && -r /etc/omen/gpu.conf ]]; then
+  # File milik root, hanya berisi MODE=...; dibaca sebagai konfigurasi.
+  # shellcheck disable=SC1091
+  . /etc/omen/gpu.conf
+  NVIDIA="${MODE:-auto}"
+fi
+
+case "$NVIDIA" in
+  auto|legacy|open|none|remove|status|unsupported) ;;
+  *) fail "nilai --nvidia tidak dikenal: $NVIDIA (auto|legacy|open|none|remove|status)"; exit 2 ;;
+esac
+
+DETECTED=$(detect_gpu)
+[[ "$NVIDIA" == "auto" ]] && NVIDIA="$DETECTED"
+
+print_gpu_status() {
+  echo
+  echo "GPU terdeteksi:"
+  if [[ -n "$GPU_LINE" ]]; then
+    sed 's/^/  /' <<<"$GPU_LINE"
+  else
+    echo "  (tidak ada GPU NVIDIA)"
+  fi
+  echo "  mode yang dipilih : $NVIDIA"
+  echo "  rekomendasi       : $DETECTED"
+  echo
+  echo "Paket NVIDIA terpasang:"
+  local p found=0
+  for p in nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils \
+           nvidia-open-dkms nvidia-utils lib32-nvidia-utils \
+           nvidia-settings opencl-nvidia lib32-opencl-nvidia; do
+    if pacman -Qq "$p" >/dev/null 2>&1; then
+      printf '  %s %s\n' "$p" "$(pacman -Q "$p" | awk '{print $2}')"
+      found=1
+    fi
+  done
+  [[ $found -eq 0 ]] && echo "  (belum ada)"
+  echo
+  echo "DKMS:"
+  dkms status 2>/dev/null | grep -i nvidia | sed 's/^/  /' || echo "  (tidak ada entri nvidia)"
+  echo
+  echo "nvidia-smi:"
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi 2>&1 | sed 's/^/  /' || true
+  else
+    echo "  (nvidia-smi belum ada)"
+  fi
+  echo
+  echo "Module: $(modinfo -F version nvidia 2>/dev/null || echo 'belum termuat/dibangun')"
+}
+
+if [[ "$NVIDIA" == "status" ]]; then
+  print_gpu_status
+  exit 0
+fi
+
+# ------------------------------------------------------- 1. lepas driver (opsional)
+remove_nvidia() {
+  log "melepas driver NVIDIA dan mengembalikan nouveau"
+  local p remove=()
+  for p in nvidia-580xx-dkms nvidia-580xx-utils lib32-nvidia-580xx-utils \
+           nvidia-open-dkms nvidia-utils lib32-nvidia-utils \
+           nvidia-settings opencl-nvidia lib32-opencl-nvidia; do
+    pacman -Qq "$p" >/dev/null 2>&1 && remove+=("$p")
+  done
+  if [[ ${#remove[@]} -gt 0 ]]; then
+    pacman -Rns --noconfirm "${remove[@]}" || warn "sebagian paket tidak bisa dilepas; cek pacman -Q | grep nvidia"
+  fi
+  rm -f /etc/modprobe.d/omen-blacklist-nouveau.conf
+  if grep -q '^MODULES=.*nvidia' /etc/mkinitcpio.conf; then
+    sed -i -E 's/^(MODULES=\()nvidia( nvidia_modeset)?( nvidia_uvm)?( nvidia_drm)? ?/\1/' /etc/mkinitcpio.conf
+  fi
+  mkinitcpio -P || warn "mkinitcpio gagal; cek /etc/mkinitcpio.conf"
+  echo
+  echo "Driver dilepas. Reboot untuk kembali ke nouveau:  reboot"
+  echo "Kalau layar tetap hitam, pilih entri 'OmenOS (linux-lts)' di boot menu."
+}
+
+if [[ "$NVIDIA" == "remove" ]]; then
+  remove_nvidia
+  exit 0
+fi
+
+# ------------------------------------------------------------ 2. multilib + sinkron
 log "menyiapkan pacman (multilib untuk lib32)"
 if grep -q '^#\[multilib\]' /etc/pacman.conf; then
   sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /etc/pacman.conf
@@ -77,68 +207,92 @@ else
   warn "multilib tidak aktif di /etc/pacman.conf; paket 32-bit dilewati"
 fi
 
-# --------------------------------------------------------------- 1. deteksi GPU
-detect_gpu() {
-  local line
-  line=$(lspci -nn 2>/dev/null | grep -Ei 'vga|3d|display' | grep -i nvidia || true)
-  [[ -z "$line" ]] && { echo none; return; }
+# --------------------------------------------------------------- 3. driver NVIDIA
+log "driver NVIDIA: mode=$NVIDIA, terdeteksi=$DETECTED"
+if [[ -n "$GPU_LINE" ]]; then
+  sed 's/^/  GPU: /' <<<"$GPU_LINE"
+fi
 
-  # Nama kartu (butuh hwdata; kalau tidak ada, jatuh ke PCI ID)
-  # Pascal/Maxwell/Kepler: GTX 7xx/9xx/10xx, GT 10xx, MX 1xx-3xx, Quadro K/M/P
-  if grep -qiE 'GTX (7|8|9|10)[0-9]0|GT 10[0-9]0|MX(1|2|3[0-5])[0-9]0|Quadro [KMP][0-9]|Quadro [0-9]{4}M' <<<"$line"; then
-    echo legacy; return
-  fi
-  if grep -qiE 'RTX|GTX 16|Turing|Quadro RTX|RTX A' <<<"$line"; then
-    echo open; return
-  fi
-  # PCI ID: Maxwell 13xx/17xx, Pascal 1bxx/1cxx/1dxx, Turing 1exx/1fxx/218x
-  if grep -qE '\[10de:(13|17|1b|1c|1d)[0-9a-f]{2}\]' <<<"$line"; then
-    echo legacy; return
-  fi
-  if grep -qE '\[10de:[0-9a-f]{4}\]' <<<"$line"; then
-    echo open; return
-  fi
-  echo none
+remove_open_driver() {
+  pacman -Qq nvidia-open-dkms >/dev/null 2>&1 || return 0
+  warn "melepas nvidia-open-dkms yang tidak cocok dengan GPU ini"
+  pacman -Rns --noconfirm nvidia-open-dkms nvidia-utils lib32-nvidia-utils \
+    opencl-nvidia lib32-opencl-nvidia 2>/dev/null || \
+    warn "sebagian paket open tidak bisa dilepas otomatis"
 }
 
-[[ "$GPU" == "auto" ]] && GPU=$(detect_gpu)
-log "driver NVIDIA: $GPU"
-lspci -nn 2>/dev/null | grep -Ei 'vga|3d|display' | sed 's/^/  GPU: /' || true
+remove_legacy_driver() {
+  pacman -Qq nvidia-580xx-dkms >/dev/null 2>&1 || return 0
+  warn "melepas nvidia-580xx yang tidak cocok dengan GPU ini"
+  pacman -Rns --noconfirm nvidia-580xx-dkms nvidia-580xx-utils \
+    lib32-nvidia-580xx-utils 2>/dev/null || \
+    warn "sebagian paket 580xx tidak bisa dilepas otomatis"
+}
 
 install_legacy_nvidia() {
-  log "memasang NVIDIA 580xx (legacy, Pascal/Maxwell) dari AUR"
+  log "memasang NVIDIA 580xx (legacy: Maxwell/Pascal/Volta) dari AUR"
   echo "Paket ini dikompilasi di mesin ini; butuh 5-15 menit."
+  remove_open_driver
   omen-aur nvidia-580xx-utils   || { fail "nvidia-580xx-utils gagal dibangun"; return 1; }
   omen-aur nvidia-580xx-dkms    || { fail "nvidia-580xx-dkms gagal dibangun"; return 1; }
-  omen-aur lib32-nvidia-580xx-utils || warn "lib32 580xx gagal (Steam 32-bit tidak akan jalan)"
-  return 0
+  if grep -q '^\[multilib\]' /etc/pacman.conf; then
+    omen-aur lib32-nvidia-580xx-utils || warn "lib32 580xx gagal (Steam 32-bit tidak akan jalan)"
+  fi
+  pacman -Qq nvidia-580xx-dkms >/dev/null 2>&1
 }
 
 install_open_nvidia() {
   log "memasang NVIDIA open (Turing ke atas) dari repo resmi"
-  pacman -S --needed --noconfirm nvidia-open-dkms nvidia-utils \
+  remove_legacy_driver
+  pacman -S --needed --noconfirm nvidia-open-dkms nvidia-utils nvidia-settings \
+    opencl-nvidia \
     || { fail "paket nvidia-open gagal dipasang"; return 1; }
-  # Paket 32-bit terpisah: kalau multilib belum aktif, driver utama tetap terpasang.
-  pacman -S --needed --noconfirm lib32-nvidia-utils \
-    || warn "lib32-nvidia-utils gagal (Steam 32-bit tidak akan jalan)"
-  return 0
+  if grep -q '^\[multilib\]' /etc/pacman.conf; then
+    pacman -S --needed --noconfirm lib32-nvidia-utils lib32-opencl-nvidia \
+      || warn "lib32-nvidia-utils gagal (Steam 32-bit tidak akan jalan)"
+  fi
+  pacman -Qq nvidia-open-dkms >/dev/null 2>&1
 }
 
-case "$GPU" in
-  legacy) install_legacy_nvidia ;;
-  open)   install_open_nvidia ;;
-  none)   echo "tidak ada GPU NVIDIA; nouveau/AMD/Intel dibiarkan apa adanya" ;;
-  *)      fail "nilai --gpu tidak dikenal: $GPU" ;;
+verify_nvidia() {
+  dkms status 2>/dev/null | grep -qi 'nvidia.*installed' && return 0
+  modinfo nvidia >/dev/null 2>&1
+}
+
+INSTALLED=0
+case "$NVIDIA" in
+  legacy)
+    install_legacy_nvidia && INSTALLED=1
+    ;;
+  open)
+    install_open_nvidia && INSTALLED=1
+    ;;
+  none)
+    echo "driver NVIDIA dilewati; nouveau/Intel dibiarkan apa adanya"
+    ;;
+  unsupported)
+    warn "GPU NVIDIA ini tidak didukung nvidia 580xx (Fermi/Kepler) maupun nvidia-open (Turing+)."
+    warn "OmenOS membiarkan nouveau. Paksa hanya kalau Anda tahu risikonya: --nvidia=legacy"
+    ;;
+  unknown)
+    warn "GPU NVIDIA terdeteksi tetapi generasinya tidak dikenali."
+    warn "Pilih manual: --nvidia=legacy (Pascal/Maxwell) atau --nvidia=open (Turing+)."
+    ;;
 esac
 
-# nouveau harus mati kalau driver NVIDIA proprietary/open dipakai. Baru ditulis
-# di sini (bukan di ISO) supaya live session tetap bisa tampil dengan nouveau.
-if [[ "$GPU" != "none" ]]; then
+if [[ $INSTALLED -eq 1 ]]; then
+  # nouveau harus mati kalau driver NVIDIA proprietary/open dipakai. Baru ditulis
+  # setelah driver benar-benar terpasang: kalau build gagal, nouveau tetap hidup
+  # dan sistem masih bisa masuk grafis.
   printf 'blacklist nouveau\noptions nouveau modeset=0\n' \
     > /etc/modprobe.d/omen-blacklist-nouveau.conf
+else
+  if [[ "$NVIDIA" == "legacy" || "$NVIDIA" == "open" ]]; then
+    warn "driver NVIDIA belum terpasang; nouveau TIDAK diblokir agar grafis tetap hidup"
+  fi
 fi
 
-# --------------------------------------------------- 2. parameter kernel (semua)
+# --------------------------------------------------- 4. parameter kernel (semua)
 add_param() {
   local p="$1" f
   # GRUB hanya disentuh kalau GRUB memang bootloader yang dipakai. Paket `grub`
@@ -156,7 +310,7 @@ add_param() {
   done
 }
 
-if [[ "$GPU" != "none" ]]; then
+if [[ $INSTALLED -eq 1 ]]; then
   add_param "nvidia-drm.modeset=1"
   add_param "nvidia.NVreg_PreserveVideoMemoryAllocations=1"
 fi
@@ -165,7 +319,7 @@ if [[ "$BOARD" == "84DA" || "$BOARD" == "84DB" || "$MODEL" == *"15-dc0"* ]]; the
   add_param "mem_sleep_default=deep"
 fi
 
-# --------------------------------------------------------------- 3. driver RGB
+# --------------------------------------------------------------- 5. driver RGB
 # Antarmuka RGB yang dikenal omen-control. Nama LED memakai "hp::" di sysfs;
 # glob bash aman karena karakter ':' legal di Linux.
 RGB_GLOBS=(
@@ -273,7 +427,7 @@ else
   log "driver RGB dilewati (--skip-rgb)"
 fi
 
-# --------------------------------------------------------- 4. layanan & initramfs
+# --------------------------------------------------------- 6. layanan & initramfs
 log "mengaktifkan layanan"
 for s in NetworkManager bluetooth sddm power-profiles-daemon \
          fstrim.timer systemd-timesyncd avahi-daemon thermald; do
@@ -287,19 +441,22 @@ fi
 systemctl enable omen-rgb 2>/dev/null || echo "  lewati omen-rgb"
 
 # Runtime PM / suspend hooks dari paket NVIDIA (nama unit mengikuti driver).
-if [[ "$GPU" != "none" ]]; then
+if [[ $INSTALLED -eq 1 ]]; then
   for s in nvidia-suspend nvidia-resume nvidia-hibernate; do
     systemctl enable "$s" 2>/dev/null || true
   done
 fi
 
-# omen-fan/omen-rgb sudah di-enable di atas. Kalau driver belum ada, daemon
-# keluar dengan pesan jelas (exit 0) dan tidak me-restart terus-menerus.
-log "membangun ulang initramfs (dua kernel bila linux-lts terpasang)"
-if [[ "$GPU" != "none" ]] && ! grep -q '^MODULES=.*nvidia' /etc/mkinitcpio.conf; then
-  sed -i 's|^MODULES=(\(.*\))|MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm \1)|' /etc/mkinitcpio.conf 2>/dev/null || true
+if [[ $INSTALLED -eq 1 ]]; then
+  log "membangun ulang initramfs (dua kernel bila linux-lts terpasang)"
+  if ! grep -q '^MODULES=.*nvidia' /etc/mkinitcpio.conf; then
+    sed -i 's|^MODULES=(\(.*\))|MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm \1)|' \
+      /etc/mkinitcpio.conf 2>/dev/null || true
+  fi
+  mkinitcpio -P || warn "mkinitcpio gagal; cek /etc/mkinitcpio.conf"
+else
+  log "initramfs NVIDIA dilewati (driver tidak terpasang)"
 fi
-mkinitcpio -P || warn "mkinitcpio gagal; cek /etc/mkinitcpio.conf"
 
 log "menjalankan ulang daemon fan/RGB"
 if [[ $SKIP_FAN -eq 0 ]]; then
@@ -307,31 +464,64 @@ if [[ $SKIP_FAN -eq 0 ]]; then
 fi
 systemctl restart omen-rgb 2>/dev/null || true
 
-# --------------------------------------------------------------- 5. laporan
+# --------------------------------------------------------- 7. tema boot/desktop
+install_grub_theme() {
+  # systemd-boot tidak punya mesin tema; ini hanya untuk sistem yang memakai GRUB.
+  [[ -f /boot/grub/grub.cfg ]] || return 0
+  [[ -f /usr/share/omenos/grub/theme.txt ]] || return 0
+  command -v grub-mkconfig >/dev/null 2>&1 || return 0
+
+  install -d /boot/grub/themes/omenos
+  cp -f /usr/share/omenos/grub/theme.txt /boot/grub/themes/omenos/
+  cp -f /usr/share/omenos/grub/background.png /boot/grub/themes/omenos/ 2>/dev/null || true
+
+  if grep -q '^GRUB_THEME=' /etc/default/grub; then
+    sed -i 's|^GRUB_THEME=.*|GRUB_THEME="/boot/grub/themes/omenos/theme.txt"|' /etc/default/grub
+  else
+    echo 'GRUB_THEME="/boot/grub/themes/omenos/theme.txt"' >> /etc/default/grub
+  fi
+  grub-mkconfig -o /boot/grub/grub.cfg >/dev/null 2>&1 || warn "grub-mkconfig gagal"
+  log "tema GRUB OmenOS dipasang"
+}
+
+install_grub_theme
+
+# --------------------------------------------------------------- 8. laporan
 log "menyimpan laporan probe"
 mkdir -p /var/log
 omen-probe > /var/log/omen-probe.txt 2>&1 || true
 echo "laporan: /var/log/omen-probe.txt"
+echo
+if command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi:"
+  nvidia-smi 2>&1 | sed 's/^/  /' || true
+else
+  echo "nvidia-smi: belum ada (normal sebelum driver terpasang / reboot)"
+fi
 echo
 echo "Uji cepat:"
 echo "  omen-control status"
 echo "  omen-control fan max        # dengarkan fan"
 echo "  omen-control fan auto"
 echo "  omen-control rgb set FF0000"
+echo "  omen-setup --nvidia=status  # cek driver + DKMS"
+echo
+echo "Tema OmenOS aktif di SDDM dan Plasma. Kalau login otomatis, logout dulu"
+echo "untuk melihat layar login; tema GRUB hanya dipakai kalau bootloader = GRUB."
 echo
 echo "Setelah reboot:  nvidia-smi  |  omen-control status"
-if [[ "$GPU" == "legacy" ]]; then
+if [[ "$NVIDIA" == "legacy" ]]; then
   echo
   echo "CATATAN: jangan pernah menjalankan 'pacman -S nvidia nvidia-open-dkms'."
   echo "GPU Pascal hanya didukung nvidia-580xx; paket resmi 590+ akan merusak grafis."
 fi
-
-# Status akhir: kalau driver GPU tetap tidak ada, keluar non-nol supaya unit
-# first-boot tidak menandai selesai dan timer mencoba lagi.
-if [[ "$GPU" != "none" ]] \
-   && ! pacman -Qq nvidia-580xx-dkms >/dev/null 2>&1 \
-   && ! pacman -Qq nvidia-open-dkms >/dev/null 2>&1; then
-  warn "driver NVIDIA belum terpasang. Sambungkan internet lalu jalankan: sudo omen-setup"
-  exit 1
+if [[ "$NVIDIA" == "legacy" || "$NVIDIA" == "open" ]]; then
+  if [[ $INSTALLED -eq 1 ]] && verify_nvidia; then
+    echo
+    echo "Driver NVIDIA terpasang dan modul DKMS terdeteksi."
+  else
+    warn "driver NVIDIA belum siap. Sambungkan internet lalu jalankan: sudo omen-setup --nvidia=$NVIDIA"
+    exit 1
+  fi
 fi
 exit 0

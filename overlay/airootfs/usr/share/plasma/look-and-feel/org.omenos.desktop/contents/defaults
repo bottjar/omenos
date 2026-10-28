@@ -1,0 +1,16 @@
+# Default OmenOS saat pengguna baru pertama kali login.
+# Format KConfig bersarang: [berkas][grup] lalu key=value.
+[kdeglobals][General]
+ColorScheme=OmenOS
+
+[kdeglobals][KDE]
+LookAndFeelPackage=org.omenos.desktop
+SingleClick=false
+
+[plasmashell][Wallpaper][org.kde.image][General]
+Image=/usr/share/omenos/wallpapers/omenos-1920x1080.png
+FillMode=2
+
+[ksplashrc][KSplash]
+Engine=ksplashqml
+Theme=org.omenos.desktop

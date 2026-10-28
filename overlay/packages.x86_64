@@ -67,6 +67,10 @@ alsa-ucm-conf
 sof-firmware
 firefox
 xdg-user-dirs
+# tema OmenOS: librsvg membuat PNG dari SVG saat build; qt6-svg merender
+# mark/logo di SDDM, splash, dan pemilih wallpaper Plasma.
+librsvg
+qt6-svg
 
 # nvidia
 # TIDAK ada paket driver NVIDIA di sini — sengaja.
