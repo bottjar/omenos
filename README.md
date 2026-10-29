@@ -9,6 +9,8 @@ tidak lebih baik untuk kebutuhan ini. Yang menentukan kualitas di sini adalah
 **pemilihan paket, parameter kernel, dan daemon fan/RGB** — semuanya ada di repo ini.
 
 Detail model dan keputusan teknis: **[docs/MODEL-15-dc00036tx.md](docs/MODEL-15-dc00036tx.md)**.
+Status terakhir, link ISO, dan cara melanjutkan pekerjaan di mesin lain:
+**[HANDOFF.md](HANDOFF.md)**.
 
 ---
 
