@@ -26,6 +26,32 @@ lspci -nnk | grep -A3 -Ei 'vga|3d|display' || true
 hr "WIFI / BLUETOOTH"
 lspci -nnk | grep -A3 -Ei 'network|wireless' || true
 rfkill list 2>/dev/null || true
+echo "-- firmware iwlwifi (9560 = 9000-pu-b0-jf-b0)"
+dmesg 2>/dev/null | grep -iE 'iwlwifi.*(firmware|loaded|fail)' | tail -10 || true
+iw dev 2>/dev/null || true
+nmcli -t -f DEVICE,TYPE,STATE dev 2>/dev/null || true
+
+hr "PENYIMPANAN"
+lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL,MOUNTPOINT,MODEL 2>/dev/null || true
+echo "cmdline: $(cat /proc/cmdline)"
+swapon --show 2>/dev/null || echo "(tanpa swap disk; zram di bawah)"
+free -h 2>/dev/null || true
+cat /sys/block/zram0/disksize 2>/dev/null | sed 's/^/zram0 disksize: /'
+
+hr "AUDIO"
+lspci -nnk | grep -A3 -i 'audio' || true
+aplay -l 2>/dev/null | head -20 || true
+grep -hEi '^(Codec|Subsystem|Vendor Id)' /proc/asound/card*/codec#* 2>/dev/null | head -12 || true
+systemctl is-active wireplumber pipewire 2>/dev/null || true
+
+hr "TERMAL CPU (i7-8750H)"
+systemctl is-active thermald 2>/dev/null || true
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null | sed 's/^/governor: /'
+for c in 0 1; do
+  f="/sys/class/powercap/intel-rapl:0/constraint_${c}_power_limit_uw"
+  [ -e "$f" ] && printf '   PL%s limit = %s W\n' "$c" "$(( $(cat "$f") / 1000000 ))"
+done
+cat /sys/class/thermal/thermal_zone*/type 2>/dev/null | tr '\n' ' '; echo
 
 hr "MODUL TERKAIT"
 lsmod | grep -Ei 'hp_wmi|omen|nvidia|sparse_keymap' || echo "(tidak ada)"
