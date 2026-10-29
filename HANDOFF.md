@@ -6,8 +6,11 @@ setelah OmenOS terpasang) atau setelah percakapan lama tidak tersedia.
 ## 1. Tujuan
 
 Distro Linux berbasis **Arch Linux** (remaster `archiso`) untuk **HP OMEN
-15-dc00036tx** (seri 15-dc0000, 2018, Coffee Lake i7-8750H + GTX 1050 Ti Pascal,
-keyboard RGB 4 zona). Yang wajib jalan: driver NVIDIA, kontrol fan, kontrol RGB.
+15-dc00036tx** (seri 15-dc0000, 2018, Coffee Lake i7-8750H + GTX 1050 Ti Pascal).
+Yang wajib jalan: driver NVIDIA dan termal/power yang benar. Kontrol fan dan RGB
+**tidak** dijanjikan: hasil bongkar aplikasi OMEN (lihat
+[docs/OMEN-APP-RE.md](docs/OMEN-APP-RE.md)) menunjukkan firmware unit ini
+melaporkan `IsSwFanControlSupport=False` dan keyboard bukan 4 zona.
 
 ## 2. Status per 2026-10-29
 
@@ -34,9 +37,17 @@ workflow*. Hasil: link gofile di ringkasan run; cadangan artifact/Release.
   hanya Turing+). Driver **tidak** ada di ISO; `omen-setup` membangunnya di boot
   pertama (butuh internet, 5–15 menit).
 - `prime-run` milik sendiri; paket `nvidia-prime` tidak dipakai.
-- **Fan 15-dc**: hanya auto/max lewat `pwm1_enable` (atau `pwm1`) → backend
-  `pwm-boost` dengan histeresis: ON 76 °C, OFF 68 °C, safety 93 °C, release 87 °C.
-- **RGB** prioritas: LED kernel `hp::kbd_backlight*` → TUXOV
+- **Fan 15-dc**: firmware HP sendiri menyatakan `IsSwFanControlSupport=False`
+  (board 84DA, platform Gamora10) → kipas milik EC, tanpa PWM. Kalau kernel
+  kebetulan mengekspos `pwm1_enable`/`pwm1`, backend `pwm-boost` dipakai dengan
+  histeresis ON 76 °C, OFF 68 °C, safety 93 °C, release 87 °C. Kalau tidak ada
+  node sama sekali, daemon keluar dengan pesan jujur + `ec_only_note()`; jalur
+  termal yang benar = `thermald` + governor `intel_pstate` +
+  `power-profiles-daemon`. Satu-satunya tuas firmware adalah mode **Cool**, belum
+  diekspos kernel.
+- **RGB**: SKU `4NT40PA#AR6` hanya punya backlight putih 1 warna (`keyboardType=0`,
+  tidak ada perangkat FourZone) → `omen-rgb` berhenti dengan pesan jelas. Backend
+  tetap ada untuk model lain: LED kernel `hp::kbd_backlight*` → TUXOV
   `hp::kbd_zoned_backlight-{wasd,left,center,right}` → pelrun `rgb_zones/` →
   `omen-rgb-keyboard`.
 - Nama hwmon chip untuk hp-wmi adalah `hp` (sudah masuk `HWMON_NAMES`).
@@ -64,6 +75,7 @@ overlay/
 tests/selftest.py           # 9 skenario sysfs palsu
 docs/HARDWARE.md            # matriks model & risiko
 docs/MODEL-15-dc00036tx.md  # detail model ini
+docs/OMEN-APP-RE.md         # hasil bongkar aplikasi OMEN (fan/termal/RGB)
 ```
 
 ## 5. Rencana uji di hardware (belum dilakukan)
@@ -110,13 +122,16 @@ Lalu dari PC penguji: `ssh omen@<ip>`. Root SSH password diblokir
 ## 6. Yang belum terverifikasi / TODO
 
 - Boot ISO dan instalasi di 15-dc00036tx fisik.
-- Backend fan aktual di 15-dc (`pwm1_enable` vs `pwm1`+`pwm1_enable`) — daemon
-  memprobe saat start.
-- Nama zona LED aktual (TUXOV: `right,center,left,wasd`; pelrun: `rgb_zones/`).
-- Ketersediaan PWM manual TUXOV di 15-dc.
-- Kualitas Wi-Fi/BT (`rtl8822be`/`iwlwifi`?) dan suspend (`mem_sleep_default=deep`).
+- Backend fan aktual di 15-dc: apakah kernel mengekspos `pwm1_enable`/`pwm1`
+  sama sekali (daemon memprobe saat start). Firmware bilang tidak ada kontrol
+  software, jadi yang realistis: tidak ada node fan, hanya `fan*_input` (RPM).
+- Nama zona LED aktual untuk model lain (TUXOV: `right,center,left,wasd`;
+  pelrun: `rgb_zones/`) — tidak berlaku untuk SKU ini yang bukan 4 zona.
+- Kualitas Wi-Fi/BT (`iwlwifi` AC 9560) dan suspend (`mem_sleep_default=deep`).
 - GUI fan/RGB belum ada (CLI + TOML).
 - Undervolt CPU tidak disertakan.
+- Mode termal firmware **Cool** belum bisa dipicu dari Linux (belum ada driver;
+  menulis EC mentah tidak dipakai karena berisiko).
 
 ## 7. Lingkungan pembuat
 

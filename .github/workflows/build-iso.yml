@@ -32,6 +32,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Bersihkan draft rilis lama
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          # Rilis dibuat sebagai draft, lalu dipublikasikan setelah semua asset
+          # terunggah. Kalau run sebelumnya dibatalkan saat upload, draft-nya
+          # tertinggal; hapus supaya tidak menumpuk.
+          drafts=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+                     --json tagName,isDraft \
+                   | jq -r '.[] | select(.isDraft) | .tagName') || drafts=""
+          for tag in $drafts; do
+            echo "hapus draft: $tag"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes || true
+          done
+          left=$(gh release list --repo "$GITHUB_REPOSITORY" --json isDraft \
+                 | jq '[.[] | select(.isDraft)] | length') || left='?'
+          echo "draft tersisa: $left"
+
       - name: Cek skrip (cepat, gagal sebelum build 40 menit)
         run: |
           set -euo pipefail
@@ -141,7 +160,11 @@ jobs:
           mkdir -p split
           # batas 2 GiB per asset -> pecah ISO bila perlu
           split -b 1900M -d -a 2 "$iso" "split/${name}.part-"
-          gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+          # Draft dulu: kalau job dibatalkan saat upload, rilis tetap draft
+          # (tidak publik, tidak muncul sebagai rilis kosong). Draft sisa
+          # dibersihkan oleh langkah "Bersihkan draft rilis lama" pada run
+          # berikutnya.
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft \
              --title "OmenOS $tag" \
              --notes "ISO OmenOS untuk HP OMEN 15-dc00036tx (board 84DA, GTX 1050 Ti).
 
@@ -162,6 +185,9 @@ jobs:
           \`dd bs=4M oflag=sync\` (Linux)." \
              || { echo "::warning::rilis gagal dibuat"; exit 0; }
           gh release upload "$tag" split/* out/*.iso.sha256 --repo "$GITHUB_REPOSITORY"
+          # Semua asset terunggah -> baru jadikan publik (atomik, tidak pernah
+          # ada rilis publik setengah jadi).
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
           url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
           echo "link=$url" >> "$GITHUB_OUTPUT"
           # jangan menimpa LINK gofile kalau sudah ada: gofile = unduhan langsung

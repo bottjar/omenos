@@ -24,11 +24,12 @@ cat /sys/class/dmi/id/bios_version    # unit ini: F.19
 | Jaringan | Intel Wireless-AC 9560 (`iwlwifi`), Realtek RTL8168 (`r8169`) |
 | Audio | Realtek ALC295 (`103c:84da`) |
 | Driver GPU | `nvidia-580xx-dkms` (AUR) — **bukan** `nvidia-open` |
-| Fan | hanya AUTO/MAX (mode `pwm1_enable`, tanpa `pwm1_max`) → backend `pwm-boost` |
-| RGB | 4 zona; LED kernel → TUXOV → pelrun → omen-rgb-keyboard |
+| Fan | **EC, tanpa PWM** (`IsSwFanControlSupport=False` dari firmware HP); kalau kernel mengekspos `pwm1_enable`, backend `pwm-boost` |
+| RGB | **tidak ada** di SKU ini (`keyboardType=0`, backlight putih 1 warna); backend tetap ada untuk model lain |
 | Suspend | `mem_sleep_default=deep` (s2idle tidak andal) |
 
 Detail lengkap: [MODEL-15-dc00036tx.md](MODEL-15-dc00036tx.md).
+Bukti dari aplikasi OMEN asli: [OMEN-APP-RE.md](OMEN-APP-RE.md).
 
 ## Dukungan fan
 
