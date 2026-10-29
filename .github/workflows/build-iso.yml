@@ -1,0 +1,185 @@
+name: Build ISO
+
+# Build ISO OmenOS di runner GitHub (Ubuntu) memakai container archlinux resmi,
+# lalu unggah hasilnya ke gofile.io supaya dapat link download tanpa login.
+# Jalankan dari tab Actions -> "Build ISO" -> "Run workflow".
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "overlay/**"
+      - "build.sh"
+      - "tests/**"
+      - ".github/workflows/build-iso.yml"
+
+concurrency:
+  group: build-iso-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  ISO_GLOB: out/*.iso
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cek skrip (cepat, gagal sebelum build 40 menit)
+        run: |
+          set -euo pipefail
+          rc=0
+          # omen-control adalah Python, sisanya bash.
+          bashfiles=()
+          for f in build.sh overlay/airootfs/root/omen-customize.sh \
+                   overlay/airootfs/usr/local/bin/*; do
+            if [[ $(head -n 1 "$f") == '#!/usr/bin/env bash' ]]; then
+              bashfiles+=("$f")
+            fi
+          done
+          for f in "${bashfiles[@]}"; do
+            bash -n "$f" || rc=1
+          done
+          if command -v shellcheck >/dev/null; then
+            shellcheck -S warning "${bashfiles[@]}" || rc=1
+          fi
+          python3 -c 'compile(open("overlay/airootfs/usr/local/bin/omen-control").read(), "omen-control", "exec")'
+          python3 tests/selftest.py || rc=1
+          exit "$rc"
+
+      - name: Kosongkan disk runner
+        run: |
+          set -euo pipefail
+          # Runner hanya punya ~14 GB bebas; mkarchiso butuh ~10-12 GB.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune -af || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Build ISO di container Arch
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm --privileged \
+            --volume "$GITHUB_WORKSPACE:/src:ro" \
+            --volume "$GITHUB_WORKSPACE/out:/out" \
+            --workdir /src \
+            archlinux:latest bash -lc '
+              set -euo pipefail
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm --needed archiso
+              export PROFILE=/var/tmp/omen-profile
+              export WORK=/var/tmp/omen-work
+              export OUT=/out
+              cd /src
+              bash build.sh
+            '
+          sudo chown -R "$(id -u):$(id -g)" out
+          ls -lh out/
+
+      - name: Hitung SHA256
+        id: meta
+        run: |
+          set -euo pipefail
+          iso=$(ls -1 $ISO_GLOB | head -1)
+          test -n "$iso"
+          sha256sum "$iso" | tee "$iso.sha256"
+          echo "iso=$iso" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$iso")" >> "$GITHUB_OUTPUT"
+          echo "sha=$(cut -d' ' -f1 "$iso.sha256")" >> "$GITHUB_OUTPUT"
+          du -h "$iso"
+
+      - name: Unggah ke gofile.io (link publik)
+        id: gofile
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          iso='${{ steps.meta.outputs.iso }}'
+          for attempt in 1 2 3; do
+            echo "percobaan $attempt..."
+            server=$(curl -fsS --retry 3 https://api.gofile.io/servers \
+                     | jq -r '.data.servers[0].name')
+            echo "server: $server"
+            if resp=$(curl -fsS --retry 2 --connect-timeout 30 \
+                        --max-time 3600 \
+                        -F "file=@${iso}" \
+                        "https://${server}.gofile.io/contents/uploadfile"); then
+              link=$(jq -r '.data.downloadPage // empty' <<<"$resp")
+              if [[ -n "$link" ]]; then
+                echo "link=$link" >> "$GITHUB_OUTPUT"
+                echo "LINK=$link" >> "$GITHUB_ENV"
+                exit 0
+              fi
+              echo "respons tanpa downloadPage: $resp" | head -c 500
+            fi
+            sleep $((attempt * 30))
+          done
+          echo "::warning::gofile gagal; pakai artifact GitHub (perlu login)."
+          exit 1
+
+      - name: Rilis GitHub (cadangan, unduh tanpa login)
+        id: release
+        if: always() && steps.meta.outputs.iso != '' && steps.gofile.outputs.link == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          iso='${{ steps.meta.outputs.iso }}'
+          tag="build-$(date -u +%Y%m%d-%H%M%S)"
+          mkdir -p split
+          # batas 2 GiB per asset -> pecah ISO bila perlu
+          split -b 1900M -d -a 2 "$iso" "split/$(basename "$iso").part-"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+             --title "OmenOS $tag" \
+             --notes "ISO OmenOS untuk HP OMEN 15-dc00036tx. Gabungkan bagian: \`cat *.part-* > $(basename "$iso")\` lalu verifikasi SHA256."
+          gh release upload "$tag" split/* out/*.iso.sha256 --repo "$GITHUB_REPOSITORY"
+          url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
+          echo "link=$url" >> "$GITHUB_OUTPUT"
+          echo "LINK=$url" >> "$GITHUB_ENV"
+
+      - name: Ringkasan
+        if: always()
+        run: |
+          set -uo pipefail
+          iso='${{ steps.meta.outputs.iso }}'
+          {
+            echo "## OmenOS ISO"
+            if [[ -n "$iso" && -f "$iso" ]]; then
+              echo ""
+              echo "**File:** \`${{ steps.meta.outputs.name }}\`"
+              echo ""
+              echo "**Ukuran:** $(du -h "$iso" | cut -f1)"
+              echo ""
+              echo "**SHA256:** \`${{ steps.meta.outputs.sha }}\`"
+              echo ""
+              echo "**Link download:** ${LINK:-tidak tersedia — pakai artifact di bawah}"
+              echo ""
+              echo "> Unduh, lalu tulis ke USB dengan Rufus mode DD / balenaEtcher."
+              if [[ -n "${LINK:-}" && "$LINK" == *"/releases/tag/"* ]]; then
+                echo "> Rilis ini berisi ISO terpecah (<2 GB per file): unduh semua, lalu"
+                echo "> \`cat *.part-* > ${{ steps.meta.outputs.name }}\` sebelum menulis USB."
+              fi
+            else
+              echo "Build gagal sebelum ISO terbentuk. Lihat log langkah \`Build ISO\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Artifact (cadangan, perlu login GitHub)
+        if: always() && steps.meta.outputs.iso != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: omenos-iso
+          path: |
+            out/*.iso
+            out/*.iso.sha256
+          compression-level: 0
+          if-no-files-found: warn
+          retention-days: 7

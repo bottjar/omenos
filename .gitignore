@@ -1,0 +1,10 @@
+# hasil build (jangan di-commit)
+out/
+work/
+build/
+*.iso
+*.iso.sha512
+
+# python
+__pycache__/
+*.pyc

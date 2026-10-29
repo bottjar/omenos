@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# omen-setup — konfigurasi OmenOS setelah instalasi (butuh internet).
+#
+#   omen-setup [--gpu=auto|legacy|open|none]
+#              [--rgb-driver=auto|stock|tuxov|pelrun|none]
+#              [--no-upgrade] [--skip-rgb] [--skip-fan]
+#
+# Kenapa ada dua jalur GPU:
+#   Pascal/Maxwell/Volta (GTX 10xx, 15-dc0000) -> driver 580xx (AUR), karena
+#   Arch 590+ dan nvidia-open hanya mendukung Turing ke atas.
+#   Turing ke atas (RTX 20xx+) -> nvidia-open-dkms resmi.
+#
+# Aman dijalankan ulang: setiap langkah idempoten.
+set -uo pipefail
+
+GPU=auto
+RGB_DRIVER=auto
+DO_UPGRADE=1
+SKIP_RGB=0
+SKIP_FAN=0
+for a in "$@"; do
+  case "$a" in
+    --gpu=*) GPU="${a#*=}" ;;
+    --rgb-driver=*) RGB_DRIVER="${a#*=}" ;;
+    --no-upgrade) DO_UPGRADE=0 ;;
+    --skip-rgb) SKIP_RGB=1 ;;
+    --skip-fan) SKIP_FAN=1 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    *) echo "argumen tidak dikenal: $a"; exit 2 ;;
+  esac
+done
+
+[[ $EUID -eq 0 ]] || { echo "jalankan dengan sudo"; exit 1; }
+log()  { printf '\n==> %s\n' "$*"; }
+warn() { printf 'PERINGATAN: %s\n' "$*"; }
+fail() { printf 'GAGAL: %s\n' "$*"; }
+
+VENDOR=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || echo "?")
+MODEL=$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "?")
+BOARD=$(cat /sys/class/dmi/id/board_name 2>/dev/null || echo "?")
+BIOS=$(cat /sys/class/dmi/id/bios_version 2>/dev/null || echo "?")
+log "hardware: $VENDOR $MODEL (board $BOARD, BIOS $BIOS)"
+[[ "$VENDOR" == *HP* || "$VENDOR" == *Hewlett* ]] || \
+  warn "ini bukan mesin HP. Kurva fan/RGB tidak akan cocok."
+
+# ------------------------------------------------------------ 0. multilib + sinkron
+log "menyiapkan pacman (multilib untuk lib32)"
+if grep -q '^#\[multilib\]' /etc/pacman.conf; then
+  sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /etc/pacman.conf
+  echo "multilib diaktifkan"
+fi
+
+if [[ $DO_UPGRADE -eq 1 ]]; then
+  log "sinkronisasi + upgrade sistem (sekali saja, agar tidak partial upgrade)"
+  pacman -Syu --noconfirm || warn "upgrade gagal; lanjut dengan paket yang ada"
+else
+  pacman -Sy --noconfirm || warn "gagal sinkronisasi database paket"
+fi
+
+pacman -S --needed --noconfirm base-devel dkms git curl alsa-lib \
+  linux-headers linux-lts-headers pciutils || warn "sebagian paket dasar gagal dipasang"
+
+if grep -q '^\[multilib\]' /etc/pacman.conf; then
+  log "memasang paket 32-bit (Steam/Wine)"
+  pacman -S --needed --noconfirm lib32-mesa lib32-vulkan-icd-loader \
+    || warn "paket lib32 gagal dipasang"
+else
+  warn "multilib tidak aktif di /etc/pacman.conf; paket 32-bit dilewati"
+fi
+
+# --------------------------------------------------------------- 1. deteksi GPU
+detect_gpu() {
+  local line
+  line=$(lspci -nn 2>/dev/null | grep -Ei 'vga|3d|display' | grep -i nvidia || true)
+  [[ -z "$line" ]] && { echo none; return; }
+
+  # Nama kartu (butuh hwdata; kalau tidak ada, jatuh ke PCI ID)
+  # Pascal/Maxwell/Kepler: GTX 7xx/9xx/10xx, GT 10xx, MX 1xx-3xx, Quadro K/M/P
+  if grep -qiE 'GTX (7|8|9|10)[0-9]0|GT 10[0-9]0|MX(1|2|3[0-5])[0-9]0|Quadro [KMP][0-9]|Quadro [0-9]{4}M' <<<"$line"; then
+    echo legacy; return
+  fi
+  if grep -qiE 'RTX|GTX 16|Turing|Quadro RTX|RTX A' <<<"$line"; then
+    echo open; return
+  fi
+  # PCI ID: Maxwell 13xx/17xx, Pascal 1bxx/1cxx/1dxx, Turing 1exx/1fxx/218x
+  if grep -qE '\[10de:(13|17|1b|1c|1d)[0-9a-f]{2}\]' <<<"$line"; then
+    echo legacy; return
+  fi
+  if grep -qE '\[10de:[0-9a-f]{4}\]' <<<"$line"; then
+    echo open; return
+  fi
+  echo none
+}
+
+[[ "$GPU" == "auto" ]] && GPU=$(detect_gpu)
+log "driver NVIDIA: $GPU"
+
+install_legacy_nvidia() {
+  log "memasang NVIDIA 580xx (legacy, Pascal/Maxwell) dari AUR"
+  echo "Paket ini dikompilasi di mesin ini; butuh 5-15 menit."
+  omen-aur nvidia-580xx-utils   || { fail "nvidia-580xx-utils gagal dibangun"; return 1; }
+  omen-aur nvidia-580xx-dkms    || { fail "nvidia-580xx-dkms gagal dibangun"; return 1; }
+  omen-aur lib32-nvidia-580xx-utils || warn "lib32 580xx gagal (Steam 32-bit tidak akan jalan)"
+  return 0
+}
+
+install_open_nvidia() {
+  log "memasang NVIDIA open (Turing ke atas) dari repo resmi"
+  pacman -S --needed --noconfirm nvidia-open-dkms nvidia-utils \
+    || { fail "paket nvidia-open gagal dipasang"; return 1; }
+  # Paket 32-bit terpisah: kalau multilib belum aktif, driver utama tetap terpasang.
+  pacman -S --needed --noconfirm lib32-nvidia-utils \
+    || warn "lib32-nvidia-utils gagal (Steam 32-bit tidak akan jalan)"
+  return 0
+}
+
+case "$GPU" in
+  legacy) install_legacy_nvidia ;;
+  open)   install_open_nvidia ;;
+  none)   echo "tidak ada GPU NVIDIA; nouveau/AMD/Intel dibiarkan apa adanya" ;;
+  *)      fail "nilai --gpu tidak dikenal: $GPU" ;;
+esac
+
+# nouveau harus mati kalau driver NVIDIA proprietary/open dipakai. Baru ditulis
+# di sini (bukan di ISO) supaya live session tetap bisa tampil dengan nouveau.
+if [[ "$GPU" != "none" ]]; then
+  printf 'blacklist nouveau\noptions nouveau modeset=0\n' \
+    > /etc/modprobe.d/omen-blacklist-nouveau.conf
+fi
+
+# --------------------------------------------------- 2. parameter kernel (semua)
+add_param() {
+  local p="$1" f
+  # GRUB hanya disentuh kalau GRUB memang bootloader yang dipakai. Paket `grub`
+  # terpasang sebagai alat penyelamat, jadi /etc/default/grub selalu ada.
+  if [[ -f /boot/grub/grub.cfg ]] && ! grep -q -- "$p" /etc/default/grub; then
+    sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"|GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $p\"|" /etc/default/grub
+    command -v grub-mkconfig >/dev/null && grub-mkconfig -o /boot/grub/grub.cfg || true
+  fi
+  if [[ -f /etc/kernel/cmdline ]] && ! grep -q -- "$p" /etc/kernel/cmdline; then
+    echo " $p" >> /etc/kernel/cmdline
+  fi
+  for f in /boot/loader/entries/*.conf; do
+    [[ -e "$f" ]] || continue
+    grep -q -- "$p" "$f" || sed -i "s|^options \(.*\)$|options \1 $p|" "$f"
+  done
+}
+
+if [[ "$GPU" != "none" ]]; then
+  add_param "nvidia-drm.modeset=1"
+  add_param "nvidia.NVreg_PreserveVideoMemoryAllocations=1"
+fi
+# Omen 2018 (15-dc0000, board 84DA/84DB): s2idle tidak andal, S3 jauh lebih baik.
+if [[ "$BOARD" == "84DA" || "$BOARD" == "84DB" || "$MODEL" == *"15-dc0"* ]]; then
+  add_param "mem_sleep_default=deep"
+fi
+
+# --------------------------------------------------------------- 3. driver RGB
+# Antarmuka RGB yang dikenal omen-control. Nama LED memakai "hp::" di sysfs;
+# glob bash aman karena karakter ':' legal di Linux.
+RGB_GLOBS=(
+  "/sys/class/leds/hp::kbd_backlight*"          # hp-wmi multicolor (kernel baru)
+  "/sys/class/leds/hp::kbd_zoned_backlight-*"   # TUXOV: wasd/left/center/right
+  "/sys/devices/platform/hp-wmi/rgb_zones/zone*"        # pelrun / omen-rgb-keyboard
+  "/sys/devices/platform/omen-rgb-keyboard/rgb_zones/zone*"
+)
+
+has_stock_rgb() {
+  local g
+  for g in "${RGB_GLOBS[@]}"; do
+    compgen -G "$g" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+
+rgb_report() {
+  local g hit=0
+  for g in "${RGB_GLOBS[@]}"; do
+    compgen -G "$g" >/dev/null 2>&1 || continue
+    printf '  %s\n' "$g"
+    hit=1
+  done
+  [[ $hit -eq 1 ]]
+}
+
+install_tuxov() {
+  log "memasang hp-wmi komunitas (fan manual + RGB) — TUXOV"
+  local tmp
+  tmp=$(mktemp -d)
+  if git clone --depth 1 https://github.com/TUXOV/hp-wmi-fan-and-backlight-control "$tmp/src"; then
+    ( cd "$tmp/src" && make && make install-dkms ) || warn "build TUXOV gagal"
+  else
+    warn "gagal clone TUXOV"
+  fi
+  rm -rf "$tmp"
+}
+
+install_pelrun() {
+  log "memasang driver RGB lama (pelrun) — hanya warna, tanpa fan"
+  local tmp
+  tmp=$(mktemp -d)
+  if git clone --depth 1 https://github.com/pelrun/hp-omen-linux-module "$tmp/src"; then
+    ( cd "$tmp/src" && make install ) || warn "build pelrun gagal"
+  else
+    warn "gagal clone pelrun"
+  fi
+  rm -rf "$tmp"
+}
+
+reload_hp_wmi() {
+  modprobe -r hp_wmi 2>/dev/null || true
+  depmod -a 2>/dev/null || true
+  modprobe hp_wmi 2>/dev/null || modprobe hp-wmi 2>/dev/null || true
+}
+
+# TUXOV dan pelrun sama-sama menyediakan modul bernama `hp-wmi`. Modul DKMS
+# (updates/dkms) selalu menang atas extra/, jadi TUXOV harus dilepas dulu kalau
+# kita mau pelrun benar-benar dimuat.
+drop_dkms_hp_wmi() {
+  command -v dkms >/dev/null 2>&1 || return 0
+  local pkg ver rest
+  while IFS= read -r line; do
+    pkg=${line%%/*}
+    rest=${line#*/}
+    ver=${rest%%,*}
+    [[ -n "$pkg" && -n "$ver" ]] || continue
+    dkms remove -m "$pkg" -v "$ver" --all >/dev/null 2>&1 || true
+    rm -rf "/usr/src/$pkg-$ver"
+    log "  melepas DKMS $pkg/$ver"
+  done < <(dkms status 2>/dev/null | grep -i '^hp-wmi')
+}
+
+if [[ $SKIP_RGB -eq 0 ]]; then
+  case "$RGB_DRIVER" in
+    auto)
+      if has_stock_rgb; then
+        log "RGB: sudah tersedia (kernel atau driver komunitas) — tidak perlu driver tambahan"
+      else
+        install_tuxov
+        reload_hp_wmi
+        if ! has_stock_rgb; then
+          warn "TUXOV tidak mengekspos RGB di model ini; mencoba driver pelrun"
+          drop_dkms_hp_wmi
+          install_pelrun
+          reload_hp_wmi
+        fi
+      fi
+      ;;
+    stock) log "RGB: memakai kernel apa adanya" ;;
+    tuxov) install_tuxov; reload_hp_wmi ;;
+    pelrun) drop_dkms_hp_wmi; install_pelrun; reload_hp_wmi ;;
+    none) echo "driver RGB dilewati" ;;
+    *) warn "nilai --rgb-driver tidak dikenal: $RGB_DRIVER" ;;
+  esac
+
+  if has_stock_rgb; then
+    echo "RGB terdeteksi:"
+    rgb_report || true
+  else
+    warn "belum ada antarmuka RGB. Setelah reboot cek: omen-probe | grep -A20 'RGB ZONES'"
+  fi
+else
+  log "driver RGB dilewati (--skip-rgb)"
+fi
+
+# --------------------------------------------------------- 4. layanan & initramfs
+log "mengaktifkan layanan"
+for s in NetworkManager bluetooth sddm power-profiles-daemon \
+         fstrim.timer systemd-timesyncd avahi-daemon; do
+  systemctl enable "$s" 2>/dev/null || echo "  lewati $s"
+done
+if [[ $SKIP_FAN -eq 0 ]]; then
+  systemctl enable omen-fan 2>/dev/null || echo "  lewati omen-fan"
+else
+  log "omen-fan dilewati (--skip-fan)"
+fi
+systemctl enable omen-rgb 2>/dev/null || echo "  lewati omen-rgb"
+
+# Runtime PM / suspend hooks dari paket NVIDIA (nama unit mengikuti driver).
+if [[ "$GPU" != "none" ]]; then
+  for s in nvidia-suspend nvidia-resume nvidia-hibernate; do
+    systemctl enable "$s" 2>/dev/null || true
+  done
+fi
+
+# omen-fan/omen-rgb sudah di-enable di atas. Kalau driver belum ada, daemon
+# keluar dengan pesan jelas (exit 0) dan tidak me-restart terus-menerus.
+log "membangun ulang initramfs (dua kernel bila linux-lts terpasang)"
+if [[ "$GPU" != "none" ]] && ! grep -q '^MODULES=.*nvidia' /etc/mkinitcpio.conf; then
+  sed -i 's|^MODULES=(\(.*\))|MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm \1)|' /etc/mkinitcpio.conf 2>/dev/null || true
+fi
+mkinitcpio -P || warn "mkinitcpio gagal; cek /etc/mkinitcpio.conf"
+
+log "menjalankan ulang daemon fan/RGB"
+if [[ $SKIP_FAN -eq 0 ]]; then
+  systemctl restart omen-fan 2>/dev/null || true
+fi
+systemctl restart omen-rgb 2>/dev/null || true
+
+# --------------------------------------------------------------- 5. laporan
+log "menyimpan laporan probe"
+mkdir -p /var/log
+omen-probe > /var/log/omen-probe.txt 2>&1 || true
+echo "laporan: /var/log/omen-probe.txt"
+echo
+echo "Uji cepat:"
+echo "  omen-control status"
+echo "  omen-control fan max        # dengarkan fan"
+echo "  omen-control fan auto"
+echo "  omen-control rgb set FF0000"
+echo
+echo "Setelah reboot:  nvidia-smi  |  omen-control status"
+if [[ "$GPU" == "legacy" ]]; then
+  echo
+  echo "CATATAN: jangan pernah menjalankan 'pacman -S nvidia nvidia-open-dkms'."
+  echo "GPU Pascal hanya didukung nvidia-580xx; paket resmi 590+ akan merusak grafis."
+fi
+
+# Status akhir: kalau driver GPU tetap tidak ada, keluar non-nol supaya unit
+# first-boot tidak menandai selesai dan timer mencoba lagi.
+if [[ "$GPU" != "none" ]] \
+   && ! pacman -Qq nvidia-580xx-dkms >/dev/null 2>&1 \
+   && ! pacman -Qq nvidia-open-dkms >/dev/null 2>&1; then
+  warn "driver NVIDIA belum terpasang. Sambungkan internet lalu jalankan: sudo omen-setup"
+  exit 1
+fi
+exit 0

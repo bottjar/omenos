@@ -1,0 +1,19 @@
+[Unit]
+Description=OmenOS fan curve daemon
+Documentation=https://github.com/OmenLinux
+After=multi-user.target
+ConditionPathExists=/usr/local/bin/omen-control
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/omen-control daemon-fan
+ExecStop=-/usr/local/bin/omen-control fan auto
+Restart=on-failure
+RestartSec=10
+# fan/EC butuh akses tulis sysfs
+ProtectSystem=full
+ReadWritePaths=/sys
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# omen-install — instalasi OmenOS ke disk (UEFI + GPT). MENGHAPUS SELURUH DISK.
+#
+#   sudo omen-install /dev/nvme0n1
+#
+# Partisi: 1 GiB ESP (FAT32) + sisa disk sebagai root (ext4).
+# Dua kernel dipasang (linux + linux-lts) dengan entri boot terpisah, supaya
+# kalau update kernel merusak driver NVIDIA Anda masih bisa boot ke LTS.
+set -euo pipefail
+[[ $EUID -eq 0 ]] || { echo "jalankan dengan sudo"; exit 1; }
+
+log() { printf '\n==> %s\n' "$*"; }
+DISK="${1:-}"
+USERNAME="${OMEN_USER:-omen}"
+HOSTNAME_="${OMEN_HOSTNAME:-omen}"
+
+if [[ -z "$DISK" ]]; then
+  echo "Disk yang terdeteksi:"
+  lsblk -dpno NAME,SIZE,MODEL | sed 's/^/  /'
+  read -rp "Disk target (mis. /dev/nvme0n1): " DISK
+fi
+[[ -b "$DISK" ]] || { echo "bukan block device: $DISK"; exit 1; }
+
+lsblk -o NAME,SIZE,MODEL "$DISK"
+echo
+echo "SELURUH ISI $DISK AKAN DIHAPUS."
+read -rp "ketik ERASE untuk lanjut: " ok
+[[ "$ok" == "ERASE" ]] || { echo "dibatalkan"; exit 1; }
+
+read -rsp "Password root: " ROOTPW; echo
+read -rsp "Password user '$USERNAME': " USERPW; echo
+
+log "mempartisi $DISK"
+umount -R /mnt 2>/dev/null || true
+sgdisk --zap-all "$DISK"
+sgdisk -n 1:0:+1G -t 1:ef00 -c 1:"OMENOS_ESP" "$DISK"
+sgdisk -n 2:0:0   -t 2:8304 -c 2:"OMENOS_ROOT" "$DISK"
+part() { [[ "$DISK" =~ [0-9]$ ]] && echo "${DISK}p$1" || echo "${DISK}$1"; }
+ESP=$(part 1); ROOT=$(part 2)
+
+mkfs.fat -F32 -n OMENOS_ESP "$ESP"
+mkfs.ext4 -F -L OMENOS_ROOT "$ROOT"
+mount "$ROOT" /mnt
+mkdir -p /mnt/boot
+mount "$ESP" /mnt/boot
+
+log "memasang paket dasar (bisa 10-20 menit)"
+mapfile -t PKGS < <(grep -vE '^\s*(#|$)' /root/packages.x86_64)
+pacstrap -K /mnt "${PKGS[@]}"
+
+genfstab -U /mnt >> /mnt/etc/fstab
+
+# ------------------------------------------------------------------ pacman
+# pacstrap memakai pacman.conf milik live ISO, sehingga sistem hasil instalasi
+# mendapat mirrorlist/kacauan yang sama. Salin eksplisit, lalu aktifkan multilib
+# supaya `omen-setup` bisa memasang lib32-nvidia-580xx-utils (Steam 32-bit).
+log "menyalin konfigurasi pacman ke sistem target"
+cp /etc/pacman.conf /mnt/etc/pacman.conf
+install -Dm644 /etc/pacman.d/mirrorlist /mnt/etc/pacman.d/mirrorlist
+# uncomment hanya blok [multilib] (baris Include repo lain tidak tersentuh)
+sed -i '/^#\[multilib\]/,/^#Include/ s/^#//' /mnt/etc/pacman.conf
+
+if [[ -f /root/omen-overlay.tar ]]; then
+  log "memasang overlay OmenOS"
+  tar -xf /root/omen-overlay.tar -C /mnt
+fi
+
+# DNS: live ISO memakai symlink resolv.conf -> systemd-resolved. Di sistem
+# target NetworkManager yang mengisi file ini saat boot, jadi mulai dari file
+# kosong (bukan symlink yang menunjuk ke layanan yang tidak aktif).
+rm -f /mnt/etc/resolv.conf
+: > /mnt/etc/resolv.conf
+
+# Suspend: 15-dc0000 (board 84DA/84DB) tidak andal dengan s2idle.
+CMDLINE_EXTRA=""
+BOARD=$(cat /sys/class/dmi/id/board_name 2>/dev/null || echo "?")
+MODEL=$(cat /sys/class/dmi/id/product_name 2>/dev/null || echo "?")
+if [[ "$BOARD" == "84DA" || "$BOARD" == "84DB" || "$MODEL" == *"15-dc0"* ]]; then
+  CMDLINE_EXTRA="mem_sleep_default=deep"
+fi
+
+log "konfigurasi sistem"
+arch-chroot /mnt env ROOTPW="$ROOTPW" USERPW="$USERPW" USERNAME="$USERNAME" \
+  HOSTNAME_="$HOSTNAME_" CMDLINE_EXTRA="$CMDLINE_EXTRA" bash -s <<'CHROOT'
+set -euo pipefail
+ln -sf /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
+hwclock --systohc
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+echo "id_ID.UTF-8 UTF-8" >> /etc/locale.gen
+locale-gen
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
+echo "$HOSTNAME_" > /etc/hostname
+printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s.localdomain %s\n' "$HOSTNAME_" "$HOSTNAME_" > /etc/hosts
+
+echo "root:$ROOTPW" | chpasswd
+useradd -m -G wheel,video,render,audio,input,power,storage -s /bin/bash "$USERNAME" || true
+echo "$USERNAME:$USERPW" | chpasswd
+sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+
+# initramfs: JANGAN tambahkan modul nvidia di sini. Driver belum terpasang;
+# modul yang tidak ada hanya menghasilkan error saat mkinitcpio. omen-setup
+# menambahkannya setelah driver terpasang, lalu menjalankan mkinitcpio -P.
+mkinitcpio -P
+
+# bootloader: systemd-boot, dua entri kernel.
+# `bootctl install` mendeteksi ESP yang di-mount di /boot (systemd >= 252
+# menghapus opsi --path=).
+bootctl install
+ROOT_UUID=$(blkid -s UUID -o value "$(findmnt -no SOURCE /)")
+mkdir -p /boot/loader/entries
+cat > /boot/loader/loader.conf <<EOF
+default  omenos.conf
+timeout  4
+editor   0
+EOF
+
+write_entry() {
+  local file="$1" title="$2" kernel="$3" initrd="$4"
+  [[ -f "/boot/$kernel" ]] || { echo "  lewati $title ($kernel tidak ada)"; return 0; }
+  cat > "/boot/loader/entries/$file" <<EOF
+title   $title
+linux   /$kernel
+initrd  /$initrd
+options root=UUID=$ROOT_UUID rw quiet loglevel=3 $CMDLINE_EXTRA
+EOF
+}
+
+write_entry omenos.conf     "OmenOS (linux)"     vmlinuz-linux     initramfs-linux.img
+write_entry omenos-lts.conf "OmenOS (linux-lts)" vmlinuz-linux-lts initramfs-linux-lts.img
+
+# fallback initramfs dari paket kernel juga didaftarkan bila tersedia
+for k in linux linux-lts; do
+  if [[ -f "/boot/vmlinuz-$k" && -f "/boot/initramfs-$k-fallback.img" ]]; then
+    cat > "/boot/loader/entries/omenos-$k-fallback.conf" <<EOF
+title   OmenOS ($k, fallback initramfs)
+linux   /vmlinuz-$k
+initrd  /initramfs-$k-fallback.img
+options root=UUID=$ROOT_UUID rw quiet loglevel=3 $CMDLINE_EXTRA
+EOF
+  fi
+done
+
+for s in NetworkManager bluetooth sddm omen-fan omen-rgb power-profiles-daemon \
+         fstrim.timer systemd-timesyncd avahi-daemon; do
+  systemctl enable "$s" 2>/dev/null || true
+done
+
+# jalankan omen-setup sekali saat boot pertama (butuh internet).
+# Kalau gagal (mis. Wi-Fi belum dikonfigurasi), timer mencoba lagi tiap 15 menit
+# sampai sukses; penanda /var/lib/omen/setup-done mencegah pengulangan.
+mkdir -p /var/lib/omen
+cat > /etc/systemd/system/omen-setup-once.service <<EOF
+[Unit]
+Description=OmenOS first-boot configuration
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/omen/setup-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/omen-setup --gpu=auto
+ExecStartPost=/bin/touch /var/lib/omen/setup-done
+RemainAfterExit=yes
+# Jangan menulis ke tty1: SDDM/Plasma sudah memakainya. Pantau dengan:
+#   journalctl -u omen-setup-once -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/systemd/system/omen-setup-retry.timer <<'EOF'
+[Unit]
+Description=Retry OmenOS first-boot setup until it succeeds
+# Timer berhenti sendiri setelah penanda sukses dibuat.
+ConditionPathExists=!/var/lib/omen/setup-done
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+systemctl enable omen-setup-once.service omen-setup-retry.timer
+CHROOT
+
+log "selesai"
+umount -R /mnt
+echo
+echo "OmenOS terpasang. Cabut media instalasi lalu reboot."
+echo "Boot pertama akan menjalankan omen-setup (butuh internet)."
+echo "Kalau grafis bermasalah, pilih entri 'OmenOS (linux-lts)' di boot menu."
+echo "Cek hasilnya dengan:  omen-control status"

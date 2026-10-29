@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# omen-aur — bangun & pasang satu paket AUR tanpa AUR helper.
+#
+#   omen-aur nvidia-580xx-utils
+#
+# Kenapa tidak `makepkg` langsung sebagai root? makepkg menolak berjalan sebagai
+# root. Skrip ini membuat user sistem `aurbuilder` yang hanya boleh memanggil
+# pacman lewat sudo, lalu menjalankan makepkg sebagai user tersebut.
+set -euo pipefail
+
+PKG="${1:-}"
+[[ -n "$PKG" ]] || { echo "pakai: omen-aur <nama-paket-aur>"; exit 2; }
+[[ $EUID -eq 0 ]] || { echo "jalankan dengan sudo"; exit 1; }
+
+BUILDER=aurbuilder
+HOME_DIR=/var/lib/omen/aur
+SUDOERS=/etc/sudoers.d/omen-aur
+
+PACMAN=$(command -v pacman)
+CURL=$(command -v curl)
+[[ -n "$CURL" ]] || { echo "curl tidak ditemukan (pacman -S curl)"; exit 1; }
+
+# --- user build (tanpa login, tanpa shell interaktif)
+# Buat parent home lebih dulu: `useradd -m` tidak selalu membuat direktori induk.
+mkdir -p "$HOME_DIR"
+if ! id "$BUILDER" >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir "$HOME_DIR" \
+          --shell /bin/bash "$BUILDER"
+fi
+
+# --- hanya `pacman` yang boleh dijalankan tanpa password oleh builder
+printf '%s ALL=(ALL) NOPASSWD: %s\n' "$BUILDER" "$PACMAN" > "$SUDOERS"
+chmod 440 "$SUDOERS"
+visudo -cf "$SUDOERS" >/dev/null
+
+mkdir -p "$HOME_DIR/build" "$HOME_DIR/.cache"
+chown -R "$BUILDER":"$BUILDER" "$HOME_DIR"
+
+echo "==> AUR: $PKG"
+runuser -u "$BUILDER" -- env HOME="$HOME_DIR" bash -c '
+  set -euo pipefail
+  cd "$HOME/build"
+  rm -rf "$1" "$1.tar.gz"
+  curl -fsSLO "https://aur.archlinux.org/cgit/aur.git/snapshot/$1.tar.gz"
+  tar xzf "$1.tar.gz"
+  cd "$1"
+  # -s: pasang dependency resmi, -i: pasang hasil build, --noconfirm
+  makepkg -si --noconfirm
+' _ "$PKG"

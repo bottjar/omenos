@@ -1,0 +1,810 @@
+#!/usr/bin/env python3
+"""
+omen-control — satu titik kendali fan + RGB untuk laptop HP Omen di Linux.
+
+Backend dideteksi otomatis, bukan di-hardcode ke satu model:
+
+FAN
+  pwm-manual       driver menerima PWM penuh:
+                   - `pwm1_max` ada (driver dengan PWM manual), atau
+                   - driver komunitas TUXOV (`pwm1_enable=1` + `pwm1` 0-255,
+                     tanpa `pwm1_max`; dukungan diuji saat daemon start)
+                   -> persen PWM benar-benar diterapkan
+  pwm-boost        hanya mode 0/2 (max/auto) lewat `pwm1_enable` (atau `pwm1`);
+                   ini yang dipakai Omen 2018
+                   (15-dc0000, board 84DA/84DB) -> kurva jadi on/off cerdas
+  platform-profile hanya /sys/firmware/acpi/platform_profile
+                   -> quiet / balanced / performance
+  (none)           tidak ada apa pun; daemon berhenti dengan pesan jelas
+
+RGB
+  zones            /sys/devices/platform/.../rgb_zones/zone00..03
+                   (driver hp-wmi patch / omen-rgb-keyboard / pelrun)
+  leds             /sys/class/leds/hp::kbd*/multi_intensity
+                   - hp::kbd_backlight            (satu zona)
+                   - hp::kbd_zoned_backlight-wasd/left/center/right (TUXOV)
+                   - hp::kbd_backlight*           (hp-wmi multicolor, kernel >= 7.0)
+  (none)           keyboard bukan 4-zona atau driver belum ada
+
+Perintah:
+  omen-control daemon-fan          daemon kurva fan (dipakai systemd)
+  omen-control daemon-rgb          daemon RGB       (dipakai systemd)
+  omen-control status              ringkasan suhu, RPM, backend, warna
+  omen-control fan auto|max|quiet|balanced|performance|low-power|curve
+  omen-control fan <0-100>         target persen (pwm-manual) / boost (pwm-boost)
+  omen-control fan boost on|off    paksa mode boost pada backend pwm-boost
+  omen-control rgb set RRGGBB [zona] | off | brightness N | animation NAMA
+
+Tanpa sudo hanya `status` yang berjalan.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import os
+import platform
+import re
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+# Untuk pengujian tanpa hardware: OMEN_SYSROOT=/tmp/fake omen-control status
+SYSROOT = Path(os.environ.get("OMEN_SYSROOT", "/"))
+
+
+def sp(path):
+    """Prefix path dengan SYSROOT (idempoten)."""
+    path = str(path)
+    if str(SYSROOT) == "/":
+        return path
+    if path.startswith(str(SYSROOT)):
+        return path
+    return str(SYSROOT / path.lstrip("/"))
+
+
+CONF_DIR = Path(sp("/etc/omen"))
+FAN_CONF = CONF_DIR / "fan.conf"
+RGB_CONF = CONF_DIR / "rgb.conf"
+
+RGB_DIRS = [
+    sp("/sys/devices/platform/omen-rgb-keyboard/rgb_zones"),
+    sp("/sys/devices/platform/hp-wmi/rgb_zones"),
+]
+LED_DIR = sp("/sys/class/leds")
+HWMON_NAMES = ("hp-wmi", "hp_isa", "omen", "omen-rgb-keyboard", "hp")
+
+PROFILE_ALIASES = {
+    "quiet": ("low-power", "cool", "quiet", "balanced"),
+    "balanced": ("balanced", "normal"),
+    "performance": ("performance",),
+}
+
+
+# ----------------------------------------------------------------- utilities
+def read(path, default=None):
+    try:
+        return Path(sp(path)).read_text().strip()
+    except OSError:
+        return default
+
+
+def write(path, value):
+    try:
+        Path(sp(path)).write_text(str(value))
+        return True
+    except OSError as exc:
+        log(f"gagal menulis {path}: {exc}")
+        return False
+
+
+def log(msg):
+    print(f"[omen] {msg}", flush=True)
+
+
+def load_toml(path, fallback):
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except FileNotFoundError:
+        return fallback
+    except Exception as exc:  # config rusak jangan bikin service mati
+        log(f"config {path} tidak valid ({exc}), memakai default")
+        return fallback
+
+
+def natural_key(text):
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", text)]
+
+
+# Urutan fisik zona LED TUXOV: kiri (WASD) -> left -> center -> right.
+LED_ZONE_ORDER = ("wasd", "left", "center", "right")
+
+
+def led_key(dev):
+    """Urutkan LED keyboard: zona bernama sesuai urutan fisik, sisanya alfabetis."""
+    name = dev.name if isinstance(dev, Path) else str(dev)
+    for i, suffix in enumerate(LED_ZONE_ORDER):
+        if name.endswith("-" + suffix):
+            return (0, i, name)
+    return (1, 0, name)
+
+
+def find_kbd_leds():
+    """Semua LED keyboard dengan antarmuka multicolor (multi_intensity).
+
+    Dipindai, bukan di-glob dengan pola `hp::kbd*`, karena nama LED memakai
+    `::` yang tidak bisa dibuat di filesystem Windows (dipakai untuk selftest).
+    """
+    out = []
+    for p in glob.glob(str(Path(LED_DIR) / "*")):
+        dev = Path(p)
+        name = dev.name.lower()
+        if "kbd" not in name and "omen" not in name:
+            continue
+        if (dev / "multi_intensity").exists():
+            out.append(dev)
+    return out
+
+
+# ---------------------------------------------------------------------- fan
+def find_hwmon():
+    for d in glob.glob(sp("/sys/class/hwmon/hwmon*")):
+        name = read(f"{d}/name", "") or ""
+        if any(n in name for n in HWMON_NAMES):
+            return Path(d)
+    # fallback: hwmon mana pun yang punya fan*_input
+    for d in glob.glob(sp("/sys/class/hwmon/hwmon*")):
+        if glob.glob(f"{d}/fan*_input"):
+            return Path(d)
+    return None
+
+
+class Fan:
+    """Abstraksi fan: PWM kalau didukung, kalau tidak auto/max atau profil termal.
+
+    Tiga perilaku driver yang berbeda dan harus dibedakan:
+
+    a. `pwm1_max` ada  -> PWM manual sungguhan (persen dipetakan ke 0-255).
+    b. TUXOV dkms      -> manual lewat `pwm1_enable=1` + `pwm1` 0-255, tetapi
+                          TIDAK mengekspos `pwm1_max`; dukungan manual bergantung
+                          model, jadi harus diuji dengan menulis enable=1.
+    c. hp-wmi bawaan   -> hanya `pwm1_enable`: tulis 0 = max, 2 = auto, tanpa
+                          persen (`pwm1` sendiri kadang tidak diekspos).
+    """
+
+    def __init__(self):
+        self.hwmon = find_hwmon()
+        self.pp = Path(sp("/sys/firmware/acpi/platform_profile"))
+        self.pp_choices = Path(sp("/sys/firmware/acpi/platform_profile_choices"))
+        self.pwm = None
+        self.pwm_enable = None
+        self.manual = False       # driver sudah terbukti menerima PWM manual
+        self.manual_hint = False  # ada indikasi driver mendukung PWM manual
+        if self.hwmon:
+            # Kernel lama hanya membuat pwm1_enable; kernel baru/TUXOV membuat
+            # pwm1 + pwm1_enable. Keduanya harus didukung.
+            pwm = self.hwmon / "pwm1"
+            enable = self.hwmon / "pwm1_enable"
+            if pwm.exists():
+                self.pwm = pwm
+            if enable.exists():
+                self.pwm_enable = enable
+            self.manual = (self.hwmon / "pwm1_max").exists()
+            # hp-wmi/TUXOV hanya mengekspos pwm2_input kalau tabel fan model
+            # ini mendukung PWM manual (tanpa pwm1_max, nilai 0-255).
+            self.manual_hint = self.manual or (
+                self.pwm is not None and (self.hwmon / "pwm2_input").exists())
+        self.boost = Path(sp("/sys/devices/platform/omen-rgb-keyboard/fan_boost"))
+
+    def has_pwm(self):
+        return self.pwm is not None or self.pwm_enable is not None
+
+    def mode_node(self):
+        """File yang menyimpan mode 0/2 pada driver tipe hp-wmi."""
+        return self.pwm_enable if self.pwm_enable is not None else self.pwm
+
+    def _set_mode(self, mode):
+        node = self.mode_node()
+        return write(node, mode) if node is not None else False
+
+    # --- capability
+    def capability(self):
+        if (self.manual or self.manual_hint) and self.pwm is not None:
+            return "pwm-manual"
+        if self.has_pwm():
+            return "pwm-boost"
+        if self.pp.exists():
+            return "platform-profile"
+        return "none"
+
+    def enable_manual(self):
+        """Uji apakah driver benar-benar menerima mode PWM manual.
+
+        Hanya dipanggil sebagai root dari daemon. Kalau driver menolak
+        (`EOPNOTSUPP` pada model yang tidak mendukung fan manual), state
+        dikembalikan ke otomatis dan fungsi mengembalikan False.
+        """
+        if self.pwm is None:
+            return False
+        if (self.hwmon / "pwm1_max").exists():
+            self.manual = True
+            return True
+        if self.pwm_enable is None:
+            return False
+        prev = read(self.pwm_enable, "2")
+        if not write(self.pwm_enable, 1):
+            return False
+        if read(self.pwm_enable) == "1":
+            self.manual = True
+            return True
+        write(self.pwm_enable, prev if prev in ("0", "1", "2") else "2")
+        return False
+
+    def profile_choices(self):
+        raw = read(self.pp_choices, "") or ""
+        return raw.split()
+
+    def profile(self):
+        return read(self.pp, "tidak ada")
+
+    def rpm(self):
+        out = []
+        if self.hwmon:
+            for f in sorted(self.hwmon.glob("fan*_input"), key=lambda p: natural_key(p.name)):
+                v = read(f)
+                if v and v.isdigit():
+                    out.append(int(v))
+        return out
+
+    # --- control
+    def auto(self):
+        if self.has_pwm():
+            # 2 = kontrol otomatis EC (berlaku untuk pwm1 maupun pwm1_enable).
+            self._set_mode(2)
+        else:
+            # Tanpa PWM, profil termal ADALAH kontrol fan. Kalau PWM ada,
+            # jangan sentuh profil: power-profiles-daemon / pilihan pengguna
+            # yang berhak menentukan PL1/PL2.
+            self.set_profile("balanced")
+        return True
+
+    def max(self):
+        if self.has_pwm():
+            if self.manual or self.manual_hint:
+                # mode 0 = MAX; kalau ditolak, paksa manual 255.
+                if self.pwm_enable is not None:
+                    if not write(self.pwm_enable, 0) and self.pwm is not None:
+                        write(self.pwm_enable, 1)
+                        write(self.pwm, 255)
+                elif self.pwm is not None:
+                    write(self.pwm, 255)
+            else:
+                self._set_mode(0)           # 0 = fan boost penuh
+        else:
+            self.set_profile("performance")
+        if self.boost.exists():
+            write(self.boost, 1)
+        return True
+
+    def set_boost(self, on):
+        if self.has_pwm():
+            return self._set_mode(0 if on else 2)
+        if self.boost.exists():
+            return write(self.boost, 1 if on else 0)
+        return False
+
+    def set_percent(self, pct):
+        pct = max(0, min(100, int(pct)))
+        if self.pwm is not None and (self.manual or self.manual_hint):
+            if not self.manual and not self.enable_manual():
+                # driver komunitas ada tetapi model ini tidak mendukung PWM
+                self.manual_hint = False
+            if self.manual:
+                if self.pwm_enable is not None:
+                    if not write(self.pwm_enable, 1):
+                        return False
+                return write(self.pwm, round(pct * 255 / 100))
+        if self.has_pwm():
+            # hp-wmi hanya punya dua keadaan: boost (0) atau auto (2).
+            # Ambang 70% supaya kurva tidak membuat fan menyala penuh di 60 C.
+            return self._set_mode(0 if pct >= 70 else 2)
+        return False
+
+    def set_profile(self, name):
+        """Tulis profil termal dengan alias (quiet -> low-power/cool)."""
+        if not self.pp.exists():
+            return False
+        choices = self.profile_choices()
+        candidates = PROFILE_ALIASES.get(name, (name,))
+        for cand in candidates:
+            if not choices or cand in choices:
+                if read(self.pp) == cand:
+                    return True
+                if write(self.pp, cand):
+                    return True
+        return False
+
+
+def read_temps():
+    """Suhu CPU/GPU dari semua hwmon + nvidia-smi kalau ada."""
+    vals = {}
+    for d in glob.glob(sp("/sys/class/hwmon/hwmon*")):
+        name = read(f"{d}/name", "") or "unknown"
+        for f in sorted(glob.glob(f"{d}/temp*_input"), key=natural_key):
+            v = read(f)
+            if not v or not v.lstrip("-").isdigit():
+                continue
+            label = read(f.replace("_input", "_label"), "") or Path(f).stem
+            vals[f"{name}:{label}"] = int(v) / 1000
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=2,
+        )
+        for i, line in enumerate(out.stdout.split()):
+            if line.strip().isdigit():
+                vals[f"nvidia:gpu{i}"] = float(line)
+    except Exception:
+        pass
+    return vals
+
+
+def hotspot(temps):
+    """Suhu acuan kurva: maksimum dari sensor CPU/GPU, abaikan NVMe/ACPI."""
+    interesting = {k: v for k, v in temps.items()
+                   if any(s in k for s in ("coretemp", "k10temp", "zenpower", "nvidia"))}
+    if not interesting:
+        interesting = temps
+    return max(interesting.values()) if interesting else 0.0
+
+
+def interpolate(curve, temp):
+    curve = sorted(curve)
+    if temp <= curve[0][0]:
+        return curve[0][1]
+    if temp >= curve[-1][0]:
+        return curve[-1][1]
+    for (t0, p0), (t1, p1) in zip(curve, curve[1:]):
+        if t0 <= temp <= t1:
+            ratio = (temp - t0) / (t1 - t0) if t1 != t0 else 1
+            return p0 + ratio * (p1 - p0)
+    return curve[-1][1]
+
+
+# --------------------------------------------------------------- fan policy
+DEFAULT_CURVE = [[45, 25], [55, 35], [65, 50], [75, 70], [85, 90], [92, 100]]
+
+
+def decide_fan(hot, cfg, cap, state):
+    """Fungsi murni: kembalikan aksi atau None.
+
+    Aksi: ("max", None) | ("auto", None) | ("pct", n) | ("boost", None)
+          | ("profile", nama)
+    """
+    safety = float(cfg.get("safety_temp_c", 95))
+    release = float(cfg.get("safety_release_c", safety - 4))
+    mode = state.get("mode", "auto")
+
+    if hot >= safety:
+        return ("max", None)
+
+    if mode == "max" and hot > release:
+        return None
+
+    if cap == "pwm-manual":
+        curve = cfg.get("curve", DEFAULT_CURVE)
+        target = interpolate(curve, hot)
+        prev = state.get("target")
+        hyst = float(cfg.get("hysteresis_c", 3))
+        if mode == "max":
+            return ("pct", target)
+        if prev is None or abs(target - prev) >= hyst:
+            return ("pct", target)
+        return None
+
+    if cap == "pwm-boost":
+        on = float(cfg.get("boost_on_c", 75))
+        off = float(cfg.get("boost_off_c", 68))
+        if mode == "max":
+            return ("auto", None)
+        if mode == "boost":
+            return ("auto", None) if hot <= off else None
+        return ("boost", None) if hot >= on else None
+
+    if cap == "platform-profile":
+        perf = float(cfg.get("perf_c", 80))
+        quiet = float(cfg.get("quiet_c", 55))
+        if mode == "max":
+            return ("auto", None)
+        if mode == "performance":
+            return ("profile", "balanced") if hot <= perf - 5 else None
+        if mode == "quiet":
+            if hot >= perf - 5:
+                return ("profile", "performance")
+            if hot >= quiet + 5:
+                return ("profile", "balanced")
+            return None
+        if hot >= perf:
+            return ("profile", "performance")
+        if hot <= quiet:
+            return ("profile", "quiet")
+        return None
+
+    return None
+
+
+def apply_action(fan, action, state):
+    """Terapkan aksi; kembalikan False kalau driver menolak perintah."""
+    kind, value = action
+    if kind == "max":
+        ok = fan.max()
+        state.update(mode="max", target=None)
+        log("SAFETY -> fan maksimum")
+    elif kind == "auto":
+        ok = fan.auto()
+        state.update(mode="auto", target=None)
+        log("kembali ke kontrol otomatis")
+    elif kind == "boost":
+        ok = fan.set_boost(True)
+        if ok:
+            state.update(mode="boost")
+            log("suhu tinggi -> fan boost (max)")
+        else:
+            log("gagal mengaktifkan fan boost")
+    elif kind == "pct":
+        ok = fan.set_percent(value)
+        if ok:
+            state.update(mode="curve", target=value)
+            log(f"target {value:.0f}%  rpm={fan.rpm()}")
+        else:
+            log(f"gagal menulis PWM {value:.0f}%")
+    elif kind == "profile":
+        ok = fan.set_profile(value)
+        if ok:
+            state.update(mode=value)
+            log(f"profil termal -> {value}")
+        else:
+            log(f"profil termal '{value}' ditolak driver")
+    else:
+        ok = True
+    return bool(ok)
+
+
+def daemon_fan():
+    cfg = load_toml(FAN_CONF, {})
+    interval = float(cfg.get("interval_s", 5))
+    fan = Fan()
+    cap = fan.capability()
+    log(f"backend fan: {cap} (hwmon={fan.hwmon})")
+
+    # TUXOV tidak mengekspos pwm1_max, jadi dukungan manual harus diuji.
+    if cap == "pwm-manual" and not fan.manual:
+        if fan.enable_manual():
+            log("driver menerima PWM manual (pwm1_enable=1)")
+        else:
+            fan.manual_hint = False
+            cap = fan.capability()
+            log(f"driver menolak PWM manual; memakai backend {cap}")
+
+    if cap == "none":
+        log("tidak ada kontrol fan yang tersedia. Jalankan `omen-control status` "
+            "dan cek dmesg untuk error ACPI/WMI. Model dengan ACPI rusak "
+            "(mis. board 8BCA) tidak bisa dikendalikan dari software.")
+        log("daemon berhenti (exit 0) agar systemd tidak me-restart terus-menerus; "
+            "setelah driver terpasang jalankan: systemctl restart omen-fan")
+        return 0
+
+    state = {"mode": "auto", "target": None}
+    fan.auto()
+
+    def restore(*_):
+        log("keluar, mengembalikan kontrol otomatis ke EC")
+        fan.auto()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, restore)
+    signal.signal(signal.SIGINT, restore)
+
+    while True:
+        hot = hotspot(read_temps())
+        action = decide_fan(hot, cfg, cap, state)
+        if action:
+            log(f"{hot:.1f}C")
+            if not apply_action(fan, action, state):
+                log("backend menolak perintah kontrol. Fan dikembalikan ke otomatis "
+                    "dan daemon berhenti; cek `omen-control status` dan dmesg.")
+                fan.auto()
+                return 0
+        time.sleep(interval)
+
+
+# ---------------------------------------------------------------------- rgb
+class Rgb:
+    """Backend RGB: rgb_zones (hex) atau LED multicolor (R G B desimal)."""
+
+    def __init__(self):
+        self.kind = None
+        self.dir = None
+        self.leds = []
+        for d in RGB_DIRS:
+            if Path(d).is_dir():
+                zones = sorted((Path(d).glob("zone*")), key=lambda p: natural_key(p.name))
+                if zones:
+                    self.kind, self.dir = "zones", Path(d)
+                    return
+        leds = find_kbd_leds()
+        if leds:
+            self.kind, self.leds = "leds", sorted(leds, key=led_key)
+
+    def count(self):
+        if self.kind == "zones":
+            return len(list(self.dir.glob("zone*")))
+        return len(self.leds)
+
+    def describe(self):
+        if self.kind == "zones":
+            return f"{self.kind} ({self.count()} zona di {self.dir})"
+        if self.kind == "leds":
+            return f"{self.kind} ({self.count()} zona: {', '.join(p.name for p in self.leds)})"
+        return "tidak ada"
+
+    def paths(self):
+        if self.kind == "zones":
+            return sorted(self.dir.glob("zone*"), key=lambda p: natural_key(p.name))
+        return self.leds
+
+    def set_colors(self, hexes):
+        if self.kind == "zones":
+            return sum(write(p, h) for p, h in zip(self.paths(), hexes))
+        if self.kind == "leds":
+            ok = 0
+            for dev, h in zip(self.leds, hexes):
+                h = h.lstrip("#").upper()
+                if len(h) != 6:
+                    continue
+                rgb = f"{int(h[0:2], 16)} {int(h[2:4], 16)} {int(h[4:6], 16)}"
+                if not write(dev / "multi_intensity", rgb):
+                    continue
+                # LED yang brightness-nya 0 tidak akan terlihat; naikkan ke maksimum.
+                if read(dev / "brightness") == "0":
+                    write(dev / "brightness", read(dev / "max_brightness", "255"))
+                ok += 1
+            return ok
+        return 0
+
+    def set_brightness(self, pct):
+        pct = max(0, min(100, int(pct)))
+        if self.kind == "zones":
+            f = self.dir / "brightness"
+            return write(f, pct) if f.exists() else False
+        if self.kind == "leds":
+            ok = 0
+            for dev in self.leds:
+                maxb = read(dev / "max_brightness", "255")
+                maxb = int(maxb) if str(maxb).isdigit() else 255
+                ok += 1 if write(dev / "brightness", round(pct * maxb / 100)) else 0
+            return ok > 0
+        return False
+
+    def set_effect(self, name):
+        # Tidak semua driver menyediakan animasi; jangan log error tiap 20 detik.
+        if self.kind == "zones":
+            f = self.dir / "animation"
+            return write(f, name) if f.exists() else False
+        return False
+
+    def set_speed(self, value):
+        if self.kind == "zones":
+            f = self.dir / "animation_speed"
+            return write(f, int(value)) if f.exists() else False
+        return False
+
+
+def apply_rgb(cfg):
+    rgb = Rgb()
+    if not rgb.kind:
+        return False
+    base = str(cfg.get("color", "FF3B30")).lstrip("#").upper()
+    per = cfg.get("zones") or []
+    hexes = [str(per[i]).lstrip("#").upper() if i < len(per) and per[i] else base
+             for i in range(rgb.count())]
+    rgb.set_colors(hexes)
+    if cfg.get("brightness") is not None:
+        rgb.set_brightness(int(cfg["brightness"]))
+    if cfg.get("effect"):
+        rgb.set_effect(cfg["effect"])
+    if cfg.get("animation_speed") is not None:
+        rgb.set_speed(int(cfg["animation_speed"]))
+    return True
+
+
+def daemon_rgb():
+    cfg = load_toml(RGB_CONF, {"effect": "static", "color": "FF3B30"})
+    rgb = Rgb()
+    if not rgb.kind:
+        log("tidak ada antarmuka RGB. Kemungkinan: keyboard bukan 4-zona, driver "
+            "belum terpasang, atau kernel belum mengekspos hp::kbd_backlight. "
+            "Jalankan `omen-probe` lalu lihat bagian RGB ZONES.")
+        log("daemon berhenti (exit 0); setelah driver terpasang jalankan: "
+            "systemctl restart omen-rgb")
+        return 0
+    log(f"backend RGB: {rgb.describe()}")
+    apply_rgb(cfg)
+
+    def restore(*_):
+        rgb.set_brightness(0)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, restore)
+    signal.signal(signal.SIGINT, restore)
+
+    while True:
+        time.sleep(20)
+        apply_rgb(cfg)   # EC kadang me-reset state setelah resume/sleep
+
+
+# ------------------------------------------------------------------------ CLI
+def gpu_info():
+    ver = read("/proc/driver/nvidia/version", "")
+    if ver:
+        return ver.splitlines()[0]
+    try:
+        out = subprocess.run(["lspci", "-nn"], capture_output=True, text=True, timeout=3)
+        lines = [l for l in out.stdout.splitlines()
+                 if re.search(r"(VGA|3D|Display)", l, re.I) and "NVIDIA" in l]
+        return lines[0].split(": ", 1)[-1] if lines else "tidak terdeteksi"
+    except Exception:
+        return "tidak terdeteksi"
+
+
+def cmd_status(_):
+    fan = Fan()
+    rgb = Rgb()
+    temps = read_temps()
+    print(f"model        : {read('/sys/class/dmi/id/product_name', '?')} "
+          f"(board {read('/sys/class/dmi/id/board_name', '?')})")
+    print(f"bios         : {read('/sys/class/dmi/id/bios_version', '?')}")
+    print(f"kernel       : {platform.release()}")
+    print(f"gpu          : {gpu_info()}")
+    print(f"fan backend  : {fan.capability()}"
+          + ("  (PWM manual belum diverifikasi; daemon menguji saat start)"
+             if fan.capability() == "pwm-manual" and not fan.manual else ""))
+    print(f"fan rpm      : {fan.rpm() or 'tidak terbaca'}")
+    print(f"profile      : {fan.profile()}  (pilihan: {' '.join(fan.profile_choices()) or '-'})")
+    print(f"rgb backend  : {rgb.describe()}")
+    print(f"rgb zona     : {rgb.count()}" +
+          (f"  ({', '.join(p.name for p in rgb.paths())})" if rgb.kind == "leds" else ""))
+    if temps:
+        top = sorted(temps.items(), key=lambda kv: -kv[1])[:5]
+        print("suhu         : " + ", ".join(f"{k}={v:.1f}C" for k, v in top))
+    try:
+        gpu = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.used,memory.total",
+                              "--format=csv,noheader"], capture_output=True, text=True, timeout=3)
+        print(f"nvidia-smi   : {gpu.stdout.strip() or 'tidak ada'}")
+    except Exception:
+        pass
+
+
+def cmd_fan(args):
+    fan = Fan()
+    cap = fan.capability()
+    action = args[0]
+
+    if cap == "none":
+        sys.exit("tidak ada backend fan (PWM maupun platform_profile). "
+                 "Jalankan `omen-control status` dan periksa log ACPI.")
+
+    if action == "boost":
+        if len(args) < 2 or args[1] not in ("on", "off"):
+            sys.exit("pakai: omen-control fan boost on|off")
+        if cap != "pwm-boost":
+            sys.exit(f"backend '{cap}' tidak memakai mode boost")
+        fan.set_boost(args[1] == "on")
+        print(f"fan boost -> {args[1]} (backend {cap})")
+        return
+
+    if action == "curve":
+        sys.exit(daemon_fan())
+
+    if action == "auto":
+        fan.auto()
+    elif action == "max":
+        fan.max()
+    elif action == "quiet":
+        if not fan.set_profile("quiet"):
+            if not fan.set_percent(20):
+                sys.exit("backend ini tidak mendukung mode quiet")
+    elif action in ("balanced", "performance", "low-power"):
+        if not fan.set_profile(action):
+            sys.exit(f"profil termal '{action}' tidak didukung mesin ini "
+                     f"(pilihan: {' '.join(fan.profile_choices()) or '-'})")
+    else:
+        try:
+            pct = int(action)
+        except ValueError:
+            sys.exit(f"perintah fan tidak dikenal: {action}")
+        if not fan.set_percent(pct):
+            sys.exit("backend fan tidak mendukung PWM manual")
+        cap = fan.capability()
+        if cap == "pwm-boost":
+            print(f"catatan: backend hanya auto/max; {pct}% dipetakan ke "
+                  f"{'boost' if pct >= 70 else 'auto'}")
+    print(f"fan -> {action} (backend {cap})")
+
+
+def cmd_rgb(args):
+    rgb = Rgb()
+    if not rgb.kind:
+        sys.exit("tidak ada antarmuka RGB (cek `omen-control status`)")
+    paths = rgb.paths()
+    cmd = args[0]
+    if cmd in ("set", "brightness", "animation", "speed") and len(args) < 2:
+        sys.exit(f"pakai: omen-control rgb {cmd} <nilai>")
+    if cmd == "set":
+        hexv = args[1].lstrip("#").upper()
+        if len(hexv) != 6 or any(c not in "0123456789ABCDEF" for c in hexv):
+            sys.exit("format warna harus RRGGBB")
+        if len(args) > 2:
+            try:
+                idx = int(args[2])
+            except ValueError:
+                sys.exit("nomor zona harus angka (0-3)")
+            if not 0 <= idx < len(paths):
+                sys.exit(f"zona {idx} tidak ada (tersedia 0-{len(paths) - 1})")
+            if rgb.kind == "zones":
+                write(paths[idx], hexv)
+            else:
+                write(paths[idx] / "multi_intensity",
+                      f"{int(hexv[0:2], 16)} {int(hexv[2:4], 16)} {int(hexv[4:6], 16)}")
+                if read(paths[idx] / "brightness") == "0":
+                    write(paths[idx] / "brightness",
+                          read(paths[idx] / "max_brightness", "255"))
+        else:
+            rgb.set_colors([hexv] * len(paths))
+    elif cmd == "off":
+        rgb.set_colors(["000000"] * len(paths))
+        rgb.set_brightness(0)
+    elif cmd == "brightness":
+        if not rgb.set_brightness(int(args[1])):
+            sys.exit("backend ini tidak mendukung brightness "
+                     "(mis. pelrun rgb_zones tanpa file brightness)")
+    elif cmd == "animation":
+        if not rgb.set_effect(args[1]):
+            sys.exit("backend ini tidak mendukung animasi (hanya LED statis)")
+    elif cmd == "speed":
+        if not rgb.set_speed(int(args[1])):
+            sys.exit("backend ini tidak mendukung animation speed")
+    else:
+        sys.exit(f"perintah rgb tidak dikenal: {cmd}")
+    print(f"rgb {cmd} ok ({rgb.count()} zona, backend {rgb.kind})")
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="omen-control")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("daemon-fan")
+    sub.add_parser("daemon-rgb")
+    sub.add_parser("status")
+    p = sub.add_parser("fan")
+    p.add_argument("args", nargs="+")
+    p = sub.add_parser("rgb")
+    p.add_argument("args", nargs="+")
+    a = ap.parse_args()
+
+    if a.cmd == "daemon-fan":
+        sys.exit(daemon_fan())
+    if a.cmd == "daemon-rgb":
+        sys.exit(daemon_rgb())
+    if a.cmd == "status":
+        cmd_status(a)
+    elif a.cmd == "fan":
+        cmd_fan(a.args)
+    elif a.cmd == "rgb":
+        cmd_rgb(a.args)
+
+
+if __name__ == "__main__":
+    main()

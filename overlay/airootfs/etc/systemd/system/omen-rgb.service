@@ -1,0 +1,15 @@
+[Unit]
+Description=OmenOS RGB keyboard daemon
+After=omen-fan.service multi-user.target
+ConditionPathExists=/usr/local/bin/omen-control
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/omen-control daemon-rgb
+Restart=on-failure
+RestartSec=5
+ReadWritePaths=/sys
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

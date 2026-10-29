@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# omen-probe — dump semua yang dibutuhkan untuk menyesuaikan OmenOS ke model tertentu.
+# Jalankan di laptop Omen: sudo omen-probe > ~/omen-probe.txt
+#
+# Bagian yang paling penting untuk 15-dc00036tx:
+#   DMI, HWMON, PLATFORM PROFILE, LED CLASS, RGB ZONES, ACPI/DMESG.
+set -uo pipefail
+hr() { printf '\n===== %s =====\n' "$1"; }
+
+hr "DMI"
+for f in sys_vendor product_name product_version board_name board_vendor \
+         bios_version bios_date chassis_type; do
+  printf '%-16s: %s\n' "$f" "$(cat "/sys/class/dmi/id/$f" 2>/dev/null || echo -)"
+done
+
+hr "SISTEM"
+uname -a
+[ -f /etc/os-release ] && . /etc/os-release && echo "distro: $PRETTY_NAME"
+echo "secure boot: $(mokutil --sb-state 2>/dev/null || echo 'mokutil tidak ada')"
+echo "sleep mode : $(cat /sys/power/mem_sleep 2>/dev/null || echo '-')"
+
+hr "CPU / GPU"
+lscpu | grep -E 'Model name|Vendor|^CPU\(s\)' || true
+lspci -nnk | grep -A3 -Ei 'vga|3d|display' || true
+
+hr "WIFI / BLUETOOTH"
+lspci -nnk | grep -A3 -Ei 'network|wireless' || true
+rfkill list 2>/dev/null || true
+
+hr "MODUL TERKAIT"
+lsmod | grep -Ei 'hp_wmi|omen|nvidia|sparse_keymap' || echo "(tidak ada)"
+echo
+for m in hp_wmi hp-wmi omen_rgb_keyboard omen-rgb-keyboard; do
+  modinfo "$m" 2>/dev/null | grep -E '^(filename|version|srcversion|description)' | sed "s/^/  $m: /"
+done
+
+hr "HWMON"
+for d in /sys/class/hwmon/hwmon*; do
+  echo "-- $d ($(cat "$d/name" 2>/dev/null))"
+  ls "$d" | tr '\n' ' '; echo
+  for f in "$d"/fan*_input "$d"/pwm* "$d"/temp*_input; do
+    [ -e "$f" ] && printf '   %-28s = %s\n' "$(basename "$f")" "$(cat "$f" 2>/dev/null)"
+  done
+done
+
+hr "PLATFORM PROFILE"
+if [ -e /sys/firmware/acpi/platform_profile ]; then
+  echo "aktif   : $(cat /sys/firmware/acpi/platform_profile)"
+  echo "pilihan : $(cat /sys/firmware/acpi/platform_profile_choices)"
+else
+  echo "TIDAK ADA -> hp-wmi tidak mendaftarkan profil termal (lihat bagian ACPI)"
+fi
+
+hr "HP-WMI PLATFORM"
+for d in /sys/devices/platform/hp-wmi /sys/devices/platform/hp_wmi; do
+  [ -d "$d" ] || continue
+  echo "-- $d"
+  find "$d" -maxdepth 1 -type f 2>/dev/null | while read -r f; do
+    printf '   %-28s = %s\n' "$(basename "$f")" "$(head -c 60 "$f" 2>/dev/null)"
+  done
+done
+
+hr "LED CLASS (keyboard)"
+found_led=0
+for d in /sys/class/leds/*; do
+  [ -e "$d" ] || continue
+  name=$(basename "$d")
+  case "$name" in
+    *kbd*|*omen*|hp::*) ;;
+    *) continue ;;
+  esac
+  found_led=1
+  echo "-- $name"
+  for f in brightness max_brightness multi_intensity multi_index color trigger; do
+    [ -e "$d/$f" ] && printf '   %-18s = %s\n' "$f" "$(head -c 80 "$d/$f" 2>/dev/null)"
+  done
+  printf '   %-18s = %s\n' "device" "$(readlink -f "$d/device" 2>/dev/null || echo -)"
+done
+[ "$found_led" -eq 0 ] && echo "(tidak ada LED keyboard: hp::kbd_backlight belum diekspos kernel)"
+
+hr "RGB ZONES"
+for d in /sys/devices/platform/omen-rgb-keyboard /sys/devices/platform/hp-wmi/rgb_zones; do
+  if [ -e "$d" ]; then
+    echo "-- $d"
+    find "$d" -maxdepth 2 -type f 2>/dev/null | while read -r f; do
+      printf '   %-40s = %s\n' "${f#"$d"/}" "$(head -c 60 "$f" 2>/dev/null)"
+    done
+  fi
+done
+[ -e /sys/devices/platform/omen-rgb-keyboard ] || echo "(omen-rgb-keyboard belum terpasang)"
+
+hr "ACPI / DMESG"
+dmesg 2>/dev/null | grep -Ei 'hp-wmi|hp_wmi|omen|AE_NOT_FOUND|PEP\.DETY|ACPI BIOS Error' | tail -40 || true
+
+hr "NVIDIA"
+lspci -nn | grep -Ei 'nvidia' || true
+nvidia-smi --query-gpu=name,driver_version,temperature.gpu,memory.total --format=csv 2>/dev/null || echo "nvidia-smi tidak ada"
+cat /proc/driver/nvidia/version 2>/dev/null || true
+cat /proc/driver/nvidia/params 2>/dev/null | grep -E 'modeset|PreserveVideoMemory' || true
+dkms status 2>/dev/null || true
+
+hr "BATERAI / POWER"
+for b in /sys/class/power_supply/BAT*; do
+  [ -d "$b" ] || continue
+  echo "-- $b"
+  for f in status capacity capacity_level cycle_count energy_full energy_full_design \
+           charge_control_end_threshold; do
+    [ -e "$b/$f" ] && printf '   %-30s = %s\n' "$f" "$(cat "$b/$f" 2>/dev/null)"
+  done
+done
+powerprofilesctl get 2>/dev/null || true
+
+hr "LAYANAN OMEN"
+systemctl is-active omen-fan omen-rgb 2>/dev/null || true
+systemctl is-enabled omen-fan omen-rgb 2>/dev/null || true
+
+hr "OMEN-CONTROL STATUS"
+/usr/local/bin/omen-control status 2>&1 || echo "omen-control tidak bisa dijalankan"
+
+hr "SELESAI"
+echo "Kirim file ini untuk penyesuaian kurva fan / zona RGB / quirk model."

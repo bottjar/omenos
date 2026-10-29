@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# prime-run — jalankan satu aplikasi di GPU NVIDIA discrete (hybrid graphics).
+#
+# OmenOS sengaja TIDAK memakai paket `nvidia-prime` dari repo: paket itu
+# bergantung pada `nvidia-utils` (driver 590) yang tidak mendukung GPU Pascal
+# seperti GTX 1060/1070 Max-Q di 15-dc00036tx. Skrip ini hanya butuh driver
+# NVIDIA yang sudah terpasang (580xx atau nvidia-open).
+#
+#   prime-run glxinfo | grep "OpenGL renderer"
+#   prime-run %command%        # Steam launch option
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+  echo "pakai: prime-run <perintah> [argumen...]" >&2
+  exit 2
+fi
+
+# Cek driver tanpa memaksa load: kalau /dev/nvidia0 tidak ada, beri petunjuk.
+if [[ ! -e /dev/nvidia0 ]]; then
+  echo "prime-run: /dev/nvidia0 tidak ada — driver NVIDIA belum aktif." >&2
+  echo "  cek: omen-control status | nvidia-smi" >&2
+  echo "  pasang: sudo omen-setup --gpu=legacy   (Pascal: 15-dc0000)" >&2
+fi
+
+export __NV_PRIME_RENDER_OFFLOAD=1
+export __NV_PRIME_RENDER_OFFLOAD_PROVIDER=NVIDIA-G0
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+export __VK_LAYER_NV_optimus=NVIDIA_only
+
+exec "$@"

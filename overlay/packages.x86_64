@@ -1,0 +1,130 @@
+# OmenOS packages (repo resmi Arch saja). Tambahan dari AUR/GitHub: lihat omen-setup.
+
+# dasar
+base
+base-devel
+linux
+linux-headers
+# kernel cadangan: kalau driver NVIDIA/kernel baru bermasalah, pilih entri LTS di boot menu
+linux-lts
+linux-lts-headers
+linux-firmware
+intel-ucode
+amd-ucode
+mkinitcpio
+systemd
+sudo
+curl
+nano
+vim
+git
+openssh
+rsync
+unzip
+p7zip
+man-db
+htop
+btop
+fastfetch
+tmux
+bash-completion
+zsh
+dialog
+pacman-contrib
+reflector
+archlinux-keyring
+
+# jaringan & bluetooth
+networkmanager
+wpa_supplicant
+iwd
+modemmanager
+bluez
+bluez-utils
+avahi
+
+# desktop
+plasma-meta
+sddm
+sddm-kcm
+konsole
+dolphin
+kate
+ark
+gwenview
+spectacle
+breeze-gtk
+noto-fonts
+noto-fonts-emoji
+ttf-liberation
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+alsa-utils
+sof-firmware
+firefox
+xdg-user-dirs
+
+# nvidia
+# TIDAK ada paket driver NVIDIA di sini — sengaja.
+#   - Omen 15-dc00036tx memakai GTX 1060/1070 Max-Q (Pascal). Arch 590+ dan
+#     nvidia-open hanya mendukung Turing ke atas, jadi GPU ini butuh
+#     nvidia-580xx-dkms dari AUR.
+#   - nvidia-prime bergantung pada nvidia-utils (driver 590) -> tidak dipakai;
+#     OmenOS mengirim skrip `prime-run` sendiri.
+# Driver dipilih otomatis oleh omen-setup saat boot pertama.
+egl-wayland
+egl-wayland2
+egl-gbm
+egl-x11
+switcheroo-control
+vulkan-icd-loader
+vulkan-tools
+mesa
+mesa-utils
+dkms
+hwdata
+
+# daya & termal
+power-profiles-daemon
+zram-generator
+earlyoom
+irqbalance
+lm_sensors
+hwinfo
+dmidecode
+
+# hardware tools
+pciutils
+usbutils
+i2c-tools
+smartmontools
+nvme-cli
+ntfs-3g
+dosfstools
+e2fsprogs
+exfatprogs
+btrfs-progs
+gparted
+gptfdisk
+arch-install-scripts
+
+# boot & keamanan
+grub
+efibootmgr
+sbctl
+mokutil
+
+# rgb & gaming
+openrgb
+gamemode
+mangohud
+
+# python (dipakai omen-control)
+python
+python-pip
+
+# Catatan: paket lib32-* (Steam, lib32-nvidia-* ) TIDAK ada di sini karena
+# `pacstrap` memakai pacman.conf live yang multilib-nya masih dikomentari.
+# omen-setup mengaktifkan multilib lalu memasangnya setelah sistem terpasang.
