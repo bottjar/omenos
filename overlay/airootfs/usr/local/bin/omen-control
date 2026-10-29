@@ -21,8 +21,12 @@ CATATAN BOARD 84DA (Omen 15-dc0000, mis. 15-dc00036tx)
   Firmware HP sendiri melaporkan `IsSwFanControlSupport = False` dan
   `IsBiosPerformanceControlSupport = False` (lihat docs/OMEN-APP-RE.md), jadi
   kipas di mesin ini dikendalikan EC dan TIDAK punya PWM. Backend yang benar
-  adalah `thermald` + governor CPU, bukan menulis pwm1. Mode `Cool` adalah
-  satu-satunya tuas termal firmware dan belum diekspos kernel Linux.
+  adalah `thermald` + governor CPU, bukan menulis pwm1.
+  Satu-satunya tuas firmware adalah profil termal di RAM EC: offset 0x95,
+  nilai V0 0x00=balanced, 0x01=performance, 0x02=cool. Kernel membaca byte ini
+  (`ec_read`) tetapi tidak mengekspos `platform_profile` karena query desain
+  WMI 0x28 gagal di BIOS F.19. Karena itu OmenOS menyediakan jalur eksplisit
+  `omen-control fan cool` lewat modul `ec_sys` (bukan otomatis oleh daemon).
 
 RGB
   zones            /sys/devices/platform/.../rgb_zones/zone00..03
@@ -40,6 +44,7 @@ Perintah:
   omen-control fan auto|max|quiet|balanced|performance|low-power|curve
   omen-control fan <0-100>         target persen (pwm-manual) / boost (pwm-boost)
   omen-control fan boost on|off    paksa mode boost pada backend pwm-boost
+  omen-control fan cool            board EC-only: tulis profil Cool (EC 0x95=0x02)
   omen-control rgb set RRGGBB [zona] | off | brightness N | animation NAMA
 
 Tanpa sudo hanya `status` yang berjalan.
@@ -97,6 +102,14 @@ EC_ONLY_BOARDS = {
     "84DB": "Omen 15-dc1000 (Gamora10)",
 }
 
+# RAM EC lewat ec_sys (debugfs). Offset dan nilai berasal dari driver hp-wmi
+# upstream: HP_OMEN_EC_THERMAL_PROFILE_OFFSET = 0x95 dan enum
+# hp_thermal_profile_omen_v0 (0x00/0x01/0x02).
+EC_IO = "/sys/kernel/debug/ec/ec0/io"
+EC_PROFILE_OFFSET = 0x95
+EC_PROFILE_NAMES = {0x00: "balanced", 0x01: "performance", 0x02: "cool"}
+EC_PROFILE_VALUES = {name: val for val, name in EC_PROFILE_NAMES.items()}
+
 
 # ----------------------------------------------------------------- utilities
 def read(path, default=None):
@@ -144,8 +157,53 @@ def ec_only_note():
     if board in EC_ONLY_BOARDS:
         return (f"board {board} = {EC_ONLY_BOARDS[board]}: kipas dikendalikan EC, "
                 "tanpa PWM. Firmware HP sendiri melaporkan IsSwFanControlSupport=False; "
-                "kendali termal yang benar = thermald + governor CPU")
+                "kendali termal yang benar = thermald + governor CPU, "
+                "profil Cool manual = `sudo omen-control fan cool`")
     return None
+
+
+class Ec:
+    """Akses RAM EC lewat `/sys/kernel/debug/ec/ec0/io` (modul `ec_sys`).
+
+    Dipakai hanya untuk membaca/menulis satu byte: profil termal Omen V0 di
+    offset 0x95. Pembacaan aman dan hanya butuh `modprobe ec_sys`; penulisan
+    butuh `modprobe ec_sys write_support=1` dan hanya dilakukan dari perintah
+    eksplisit, tidak pernah oleh daemon.
+    """
+
+    def __init__(self):
+        self.path = Path(sp(EC_IO))
+
+    def available(self):
+        return self.path.is_file()
+
+    def read_byte(self, off=EC_PROFILE_OFFSET):
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(off)
+                data = fh.read(1)
+        except OSError:
+            return None
+        return data[0] if data else None
+
+    def write_byte(self, value, off=EC_PROFILE_OFFSET):
+        try:
+            with open(self.path, "r+b") as fh:
+                fh.seek(off)
+                fh.write(bytes([value]))
+                fh.flush()
+        except OSError as exc:
+            log(f"gagal menulis EC 0x{off:02x}: {exc}")
+            return False
+        return True
+
+    def profile(self):
+        """Nama profil dari byte 0x95, atau None kalau EC tidak terbaca."""
+        val = self.read_byte()
+        return None if val is None else EC_PROFILE_NAMES.get(val, f"0x{val:02x}")
+
+    def writable(self):
+        return os.access(self.path, os.W_OK)
 
 
 # Urutan fisik zona LED TUXOV: kiri (WASD) -> left -> center -> right.
@@ -525,6 +583,9 @@ def daemon_fan():
         note = ec_only_note()
         if note:
             log(f"catatan: {note}")
+        if board_name() in EC_ONLY_BOARDS:
+            log("mode Cool manual (tidak otomatis): sudo modprobe ec_sys write_support=1 "
+                "lalu sudo omen-control fan cool")
         log("daemon berhenti (exit 0) agar systemd tidak me-restart terus-menerus; "
             "setelah driver terpasang jalankan: systemctl restart omen-fan")
         return 0
@@ -711,6 +772,15 @@ def cmd_status(_):
     note = ec_only_note()
     if note and fan.capability() == "none":
         print(f"fan catatan  : {note}")
+    if board_name() in EC_ONLY_BOARDS:
+        ec = Ec()
+        val = ec.read_byte()
+        if val is not None:
+            prof = EC_PROFILE_NAMES.get(val, f"0x{val:02x}")
+            print(f"ec termal    : {prof} (0x95=0x{val:02x})"
+                  + ("" if ec.writable() else "  [read-only; tulis butuh ec_sys write_support=1]"))
+        else:
+            print("ec termal    : tidak terbaca (muat modul: sudo modprobe ec_sys)")
     print(f"fan rpm      : {fan.rpm() or 'tidak terbaca'}")
     print(f"profile      : {fan.profile()}  (pilihan: {' '.join(fan.profile_choices()) or '-'})")
     print(f"rgb backend  : {rgb.describe()}")
@@ -727,10 +797,68 @@ def cmd_status(_):
         pass
 
 
+def ec_fan_action(fan, action):
+    """Jalur eksplisit board EC-only: profil termal di RAM EC (0x95).
+
+    Hanya dipanggil dari `omen-control fan ...`; daemon tidak pernah memakai
+    jalur ini. Setiap tulis diverifikasi dengan membaca ulang; kalau EC
+    menolak, nilai lama dikembalikan dan perintah gagal dengan pesan jelas.
+    """
+    if action == "performance":
+        sys.exit("board ini melaporkan IsBiosPerformanceControlSupport=False; "
+                 "profil performance tidak didukung firmware. Yang tersedia: "
+                 "cool / balanced (auto).")
+    target = "cool" if action in ("cool", "max", "quiet") else "balanced"
+    want = EC_PROFILE_VALUES[target]
+
+    ec = Ec()
+    if not ec.available():
+        sys.exit("profil EC tidak terbaca: /sys/kernel/debug/ec/ec0/io tidak ada.\n"
+                 "  baca  : sudo modprobe ec_sys\n"
+                 "  tulis : sudo modprobe -r ec_sys && sudo modprobe ec_sys write_support=1")
+
+    prev = ec.read_byte()
+    if prev is None:
+        sys.exit("EC ada tetapi offset 0x95 tidak terbaca (debugfs tidak lengkap?)")
+
+    if action == "max":
+        print("catatan: board EC tidak punya kipas 100%; 'max' = profil Cool "
+              "(satu-satunya tuas firmware).")
+    elif action == "quiet":
+        print("catatan: 'quiet' dipetakan ke profil Cool pada board EC-only.")
+
+    if prev == want:
+        print(f"EC 0x95 sudah 0x{want:02x} ({target}); tidak ada perubahan")
+        return
+    if not ec.writable():
+        sys.exit("EC read-only untuk user ini. Untuk menulis:\n"
+                 "  sudo modprobe -r ec_sys && sudo modprobe ec_sys write_support=1\n"
+                 "  sudo omen-control fan " + action)
+    if not ec.write_byte(want):
+        sys.exit("EC menolak penulisan 0x95 (modul ec_sys tanpa write_support=1?)")
+    time.sleep(0.4)  # beri EC waktu memproses sebelum verifikasi
+    got = ec.read_byte()
+    if got != want:
+        ec.write_byte(prev)
+        sys.exit(f"EC menolak 0x95=0x{want:02x} (terbaca 0x{got:02x}); "
+                 f"nilai lama 0x{prev:02x} dikembalikan. Board ini kemungkinan "
+                 "mengunci profil lewat BIOS/driver HP.")
+    print(f"EC 0x95 -> 0x{want:02x} ({target}), terverifikasi setelah 0.4 s")
+    rpm = fan.rpm()
+    if rpm:
+        print(f"rpm -> {rpm}")
+
+
 def cmd_fan(args):
     fan = Fan()
     cap = fan.capability()
     action = args[0]
+
+    if (cap == "none" and board_name() in EC_ONLY_BOARDS
+            and action in ("cool", "max", "auto", "quiet", "balanced", "performance")):
+        ec_fan_action(fan, action)
+        print(f"fan -> {action} (backend ec-profile, board EC-only)")
+        return
 
     if cap == "none":
         note = ec_only_note()
@@ -758,7 +886,7 @@ def cmd_fan(args):
         if not fan.set_profile("quiet"):
             if not fan.set_percent(20):
                 sys.exit("backend ini tidak mendukung mode quiet")
-    elif action in ("balanced", "performance", "low-power"):
+    elif action in ("balanced", "performance", "low-power", "cool"):
         if not fan.set_profile(action):
             sys.exit(f"profil termal '{action}' tidak didukung mesin ini "
                      f"(pilihan: {' '.join(fan.profile_choices()) or '-'})")

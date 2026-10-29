@@ -246,27 +246,108 @@ sebagai event WMI ke UI/overlay. Tidak ada hwmon/PWM di sisi Windows.
 
 ---
 
-## 7. Implikasi untuk OmenOS (Linux)
+## 7. Jalur Linux yang nyata (bukan tebakan)
 
-1. **Jangan berharap PWM.** Di board 84DA `IsSwFanControlSupport=False`; tidak
-   ada `pwm1` yang bisa ditulis. `omen-control` mendeteksi ini dan berhenti
-   dengan pesan jelas, bukan menulis node yang tidak ada.
-2. **Kendali termal yang realistis** = `thermald` + governor `intel_pstate` +
-   `power-profiles-daemon`. Itu yang sudah dipasang `omen-setup`.
-3. **`platform_profile`** hanya muncul kalau kernel punya driver yang mendaftar
-   profil (mis. `hp-wmi` pada model lain). Di 15-dc0xxx dengan BIOS F.19,
-   jangan dijadikan syarat; `omen-control` sudah memperlakukan ini sebagai
-   backend opsional.
-4. **Mode `Cool`** adalah satu-satunya tuas firmware. Di Linux belum ada driver
-   yang mengeksposnya; menulis EC mentah lewat `/dev/port` atau `ec_sys` tidak
-   aman dan tidak dipakai OmenOS.
-5. **RGB tidak ada.** `omen-rgb` akan berhenti dengan pesan "keyboard bukan
-   4-zona" — itu perilaku benar untuk unit ini, bukan bug.
-6. **Jangan pasang patch hp-wmi/TUXOV** sebagai default: patch itu untuk model
-   lain, dan memaksa `pwm1_enable=1` pada board ini tidak menghasilkan apa pun.
-7. **RPM tetap bisa dipantau** kalau kernel mengekspos `fan*_input` (banyak
-   Omen 2018 mengekspos lewat `hp-wmi`); `omen-probe` dan `omen-control status`
-   sudah menampilkannya bila ada.
+Kernel mengenali WMI dari `_WDG`; dari 14 entri di `\_SB.N00E.WMID`
+(DSDT `0x41A09`, buffer 280 byte) hanya beberapa yang punya driver:
+
+| GUID | obj | Driver Linux | Yang didapat |
+| --- | --- | --- | --- |
+| `5FB7F034-2C63-45E9-BE91-3D44E2C707E4` | `AA` | `hp-wmi` (`HPWMI_BIOS_GUID`) | perintah BIOS (rfkill, postcode, …); jalur profil termal 84DA **gagal** |
+| `95F24279-4D7B-4334-9387-ACCDC67EF61C` | – | `hp-wmi` (event) | event hotkey, bukan kontrol |
+| `8F1F6435-9F42-42C8-BADC-0E9424F20C9A` | `BI` | `hp-wmi-sensors` | hwmon `hp_wmi_sensors`: `fan*_input`, `temp*_input` |
+| `8F1F6436-9F42-42C8-BADC-0E9424F20C9A` | `BH` | `hp-wmi-sensors` (event) | peringatan sensor (stall/overtemp) |
+| `05901221-D566-11D1-B2F0-00A0C9062910` | `AB` | `wmi-bmof` / mapper MS | hanya mapping objek, bukan kontrol |
+| `1F4C91EB-…`, `2D114B49-…`, `988D08E3-…`, `14EA9746-…`, `322F2028-…`, `8232DE3D-…`, `7391A661-…`, `DF4E63B6-…` | `BA`…`BJ` | tidak ada driver kernel | sisa HP (lighting/diagnostik); tidak bisa dipakai |
+
+### 7.1 RPM dan suhu: `hp-wmi-sensors`
+
+`drivers/hwmon/hp-wmi-sensors.c` hanya butuh `wmi_query_block()` ke GUID
+`8F1F6435…`, jadi **tidak** tergantung jalur BIOS yang rusak. Kalau instance
+itu berisi deskriptor kipas/suhu, kernel membuat:
+
+```
+/sys/class/hwmon/hwmonN/name = hp_wmi_sensors
+fan1_input, temp1_input, ...
+```
+
+Cek: `sensors` dan `grep . /sys/class/hwmon/*/name`. `omen-control` sudah
+membaca `fan*_input` dari hwmon mana pun, jadi RPM akan muncul di `status`
+tanpa perubahan kode kalau driver ini aktif.
+
+### 7.2 `platform_profile` **tidak** muncul di board ini
+
+`hp-wmi` memang mendaftarkan `84DA` di `omen_thermal_profile_boards`, dan
+`platform_profile_omen_get_ec()` hanya membaca EC offset `0x95` (`ec_read`).
+Tetapi `thermal_profile_setup()` memanggil `platform_profile_omen_set_ec()` →
+`omen_get_thermal_policy_version()` → WMI cmdtype `0x28`
+(`HPWMI_GET_SYSTEM_DESIGN_DATA`). Di BIOS F.19 query itu mengembalikan
+`returnCode=3` (`HPWMI_RET_UNKNOWN_COMMAND`) — sama dengan log OMEN Command
+Center `SystemDesignData returnCode=3`. Fungsi mengembalikan error, probe
+gagal, dan `/sys/firmware/acpi/platform_profile` tidak dibuat. Board `84DA`
+juga tidak ada di `omen_thermal_profile_force_v0_boards`, jadi tidak ada
+shortcut. Ini **bukan** bug OmenOS dan tidak bisa diperbaiki dengan memuat
+ulang modul.
+
+### 7.3 Satu-satunya tuas: RAM EC `0x95`
+
+Driver hp-wmi membaca profil dari EC (`HP_OMEN_EC_THERMAL_PROFILE_OFFSET 0x95`),
+nilai V0: `0x00` balanced, `0x01` performance, `0x02` cool. Menulis lewat
+driver memakai WMI `0x1A` (`SET_PERFORMANCE_MODE`), tetapi karena jalur desain
+di atas gagal, driver tidak pernah mendaftarkan antarmuka tulis.
+
+Dari userspace byte itu bisa dibaca/ditulis lewat `ec_sys`:
+
+```bash
+sudo modprobe ec_sys                      # baca saja
+od -An -tx1 -j 149 -N1 /sys/kernel/debug/ec/ec0/io
+
+sudo modprobe -r ec_sys
+sudo modprobe ec_sys write_support=1      # izinkan tulis
+sudo omen-control fan cool                # 0x95 = 0x02, diverifikasi baca ulang
+```
+
+Aturan aman yang dipakai OmenOS:
+
+- hanya **satu byte** (`0x95`); flag `0x62` dan timer `0x63` tidak disentuh
+  (itu untuk board ber-timer seperti `8A15`, bukan 84DA);
+- hanya **eksplisit** dari CLI; daemon fan tidak pernah menulis EC;
+- setiap tulis dibaca ulang setelah 0,4 s; kalau EC menolak, nilai lama
+  dikembalikan dan perintah gagal (bukan "sukses" palsu);
+- `fan max` di board ini **bukan** 100% PWM — artinya profil Cool, karena
+  firmware tidak menyediakan mode kipas penuh;
+- `performance` sengaja ditolak: firmware melaporkan
+  `IsBiosPerformanceControlSupport=False`.
+
+Risiko yang jujur: menulis EC di luar driver bisa bentrok dengan EC sendiri,
+dan sebagian unit mengunci byte ini (tulis "berhasil" tetapi langsung kembali).
+Karena itu hasilnya selalu diverifikasi. Kalau ditolak, yang tersisa hanya
+jalur termal/power normal.
+
+### 7.4 Yang tidak ada di Linux (dan tidak dibuat-buat)
+
+1. **PWM / persen kipas.** `IsSwFanControlSupport=False`; tidak ada `pwm1`.
+2. **RGB 4 zona / per-key.** `keyboardType=0`; tidak ada GUID lighting yang
+   punya driver dan tidak ada HID RGB. Backlight putih tetap jalan lewat Fn/EC.
+3. **Fan boost / performance dari HP.** Hanya mode Cool.
+
+### 7.5 Perintah uji saat boot live
+
+```bash
+sudo omen-probe > ~/omen-probe.txt
+omen-control status
+cat /sys/firmware/acpi/platform_profile_choices 2>/dev/null || echo "tidak ada (normal)"
+sensors 2>/dev/null | head -40
+ls /sys/bus/wmi/devices
+sudo modprobe ec_sys
+od -An -tx1 -j 149 -N1 /sys/kernel/debug/ec/ec0/io
+dmesg | grep -iE 'hp_wmi|hp-wmi|ec_sys|ACPI Error'
+```
+
+Yang dicari: apakah `hp_wmi_sensors` memberi RPM, nilai `0x95` saat idle
+(`0x00` atau `0x02`), dan apakah `sudo omen-control fan cool` lolos verifikasi.
+Hasil itu yang menentukan apakah modul `ec_sys` perlu dimuat otomatis saat
+boot (hanya untuk baca) atau tetap manual.
 
 ---
 
@@ -311,6 +392,8 @@ OMEN Command Center di 15-dc0xxx adalah klien UWP → RPC `HPOmenRpcEndpoint` �
 → SMM/EC. Jalur WMI BIOS lama tidak tersedia di BIOS F.19. Firmware melaporkan
 bahwa board **Gamora10/84DA** tidak mendukung kontrol kipas software, tidak
 mendukung performance mode BIOS, dan hanya mendukung mode **Cool**; lampu
-keyboard bukan 4-zona. Karena itu OmenOS tidak boleh menjanjikan kontrol kipas
-manual atau RGB di mesin ini — yang bisa dilakukan adalah termal/power yang
-rapi (`thermald`, governor, zram) dan monitoring suhu/RPM.
+keyboard bukan 4-zona. Di Linux, RPM/suhu bisa datang dari `hp-wmi-sensors`,
+`platform_profile` tidak akan terdaftar (query desain `0x28` gagal), dan
+satu-satunya tuas firmware adalah byte EC `0x95` — OmenOS membacanya di
+`status` dan menulisnya hanya lewat perintah eksplisit `fan cool`. Tidak ada
+PWM manual dan tidak ada RGB yang bisa dijanjikan di mesin ini.

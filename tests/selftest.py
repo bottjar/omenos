@@ -15,7 +15,8 @@ Yang diuji:
   6. tanpa backend fan        -> pesan jelas + exit code != 0
   7. pelrun rgb_zones         -> warna saja, brightness/animasi ditolak
   8. hanya platform_profile   -> profil termal sebagai kontrol fan
-  9. decide_fan()             -> histeresis & prioritas safety (fungsi murni)
+  9. board EC-only 84DA       -> ec_sys 0x95: cool/auto, performance ditolak
+ 10. decide_fan()             -> histeresis & prioritas safety (fungsi murni)
 """
 from __future__ import annotations
 
@@ -223,6 +224,35 @@ def test_cli(tmp: Path):
     check("exit code bukan nol", p.returncode != 0, True)
     check("pesan jelas", "tidak ada backend fan" in (p.stdout + p.stderr), True)
 
+    print("varian 6b: board EC-only 84DA (tanpa PWM, tanpa platform_profile)")
+    r9 = make_tree(tmp / "h", "no-rgb")
+    for f in (r9 / "sys/class/hwmon").glob("*"):
+        shutil.rmtree(f)
+    (r9 / "sys/firmware/acpi/platform_profile").unlink()
+    (r9 / "sys/firmware/acpi/platform_profile_choices").unlink()
+    (r9 / "sys/class/dmi/id").mkdir(parents=True)
+    (r9 / "sys/class/dmi/id/board_name").write_text("84DA\n")
+    eco = r9 / "sys/kernel/debug/ec/ec0/io"
+    eco.parent.mkdir(parents=True)
+    eco.write_bytes(bytes(256))          # 0x95 = 0x00 (balanced)
+    out = run(r9, "status").stdout
+    check("status EC terbaca", "ec termal    : balanced (0x95=0x00)" in out, True)
+    check("status backend none", "fan backend  : none" in out, True)
+    p = run(r9, "fan", "cool")
+    check("fan cool exit", p.returncode, 0)
+    check("EC 0x95 @cool", eco.read_bytes()[149], 2)
+    p = run(r9, "fan", "max")
+    check("fan max exit", p.returncode, 0)
+    check("EC 0x95 @max tetap cool", eco.read_bytes()[149], 2)
+    p = run(r9, "fan", "auto")
+    check("fan auto exit", p.returncode, 0)
+    check("EC 0x95 @auto", eco.read_bytes()[149], 0)
+    p = run(r9, "fan", "performance")
+    check("performance ditolak", p.returncode != 0, True)
+    check("alasan firmware", "IsBiosPerformanceControlSupport=False" in (p.stdout + p.stderr), True)
+    p = run(r9, "fan", "55")
+    check("persen ditolak di EC-only", p.returncode != 0, True)
+
     print("varian 7: pelrun (rgb_zones tanpa brightness/animation)")
     r7 = make_tree(tmp / "g", "pelrun")
     zones7 = r7 / "sys/devices/platform/hp-wmi/rgb_zones"
@@ -250,7 +280,7 @@ def test_cli(tmp: Path):
 
 
 def test_policy(tmp: Path):
-    print("varian 9: decide_fan() / interpolate() (fungsi murni)")
+    print("varian 10: decide_fan() / interpolate() (fungsi murni)")
     mod = load_module()
     with open(CONF_SRC / "fan.conf", "rb") as fh:
         cfg = tomllib.load(fh)

@@ -35,7 +35,9 @@ Bukti dari aplikasi OMEN asli: [OMEN-APP-RE.md](OMEN-APP-RE.md).
 
 | Sumber | Cakupan | Catatan |
 |---|---|---|
-| `hp-wmi` bawaan kernel | monitor RPM, `platform_profile`, mode auto/max via `pwm1_enable` | 15-dc: hanya dua keadaan, bukan PWM bebas |
+| `hp-wmi` bawaan kernel | monitor RPM, `platform_profile`, mode auto/max via `pwm1_enable` | 84DA/84DB: `platform_profile` **tidak terdaftar** (query desain WMI `0x28` gagal); RPM lewat `hp-wmi-sensors` |
+| `hp-wmi-sensors` bawaan kernel | hwmon `hp_wmi_sensors`: RPM kipas + suhu | GUID `8F1F6435…`; tidak tergantung jalur BIOS yang rusak |
+| `ec_sys` (debugfs) | baca/tulis profil termal EC `0x95` | khusus 84DA/84DB; `0x00` balanced, `0x01` performance, `0x02` cool; eksplisit, bukan daemon |
 | TUXOV `hp-wmi-fan-and-backlight-control` | PWM manual 0-255 + RGB 4 zona | manual bergantung model; `pwm1_max` tidak ada, diuji `pwm1_enable=1` |
 | kernel ≥ 6.19/7.x (`hp-wmi` upstream) | PWM manual + keep-alive untuk Omen/Victus baru | belum tentu untuk 15-dc |
 | `omen-rgb-keyboard` (OmenLinux) | RGB + fan RPM/curve + preset termal | driver komunitas, DKMS |
@@ -74,6 +76,12 @@ dkms status
 
 Gejala: `hp_wmi` load tanpa error, tapi `/sys/firmware/acpi/platform_profile` tidak ada,
 RPM selalu 0, semua tool fan gagal.
+
+> Pada 84DA/84DB (15-dc0000) ketiadaan `platform_profile` juga **normal** dan
+> bukan bug ACPI ini: query desain WMI `0x28` memang mengembalikan
+> `returnCode=3`, tanpa pesan `AE_NOT_FOUND`. Bedakan lewat
+> `dmesg | grep -i 'ACPI BIOS Error'`; detail di
+> [OMEN-APP-RE.md](OMEN-APP-RE.md) §7.2.
 
 ```
 ACPI BIOS Error (bug): Could not resolve symbol [\_SB.PEP.DETY], AE_NOT_FOUND
