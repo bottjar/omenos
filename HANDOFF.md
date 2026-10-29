@@ -120,6 +120,21 @@ Lalu dari PC penguji: `ssh omen@<ip>`. Root SSH password diblokir
 
 ## 7. Lingkungan pembuat
 
-PC build: **ASUS desktop i5-10400 + RTX 2060**, Windows, **VT-x nonaktif**
-(`Virtualization Enabled In Firmware: No`) → Docker/WSL2 tidak bisa; build
-dilakukan di GitHub Actions. Jangan mengandalkan build lokal di mesin itu.
+Dua mesin, dua-duanya Windows, **tidak ada Linux lokal** (WSL tidak terpasang di
+laptop; VT-x nonaktif di desktop) → ISO **selalu** dibangun di GitHub Actions.
+
+| Mesin | Peran | Catatan |
+|---|---|---|
+| Laptop **OMEN 15-dc00036tx** (`DESKTOP-OKNQFE1`, 192.168.18.31) | unit uji + tempat kerja sekarang | 12 GB bebas di C:; git ada di `C:\Program Files\Git` |
+| Desktop **fajarPC** (`192.168.18.6`) | mesin lama, punya repo + OpenCode serve | ASUS i5-10400 + RTX 2060 |
+
+Sesi OpenCode dari fajarPC sudah diimpor ke laptop ini (ID sama,
+`ses_e7aa54175ffdjS2RT11jC8v6bo`) supaya riwayat kerja tidak hilang. Server di
+fajarPC tetap hidup di `0.0.0.0:4096` dengan password sendiri — matikan kalau
+tidak dipakai:
+
+```bash
+opencode service stop     # di fajarPC
+```
+
+Jangan mengandalkan build lokal di kedua mesin.

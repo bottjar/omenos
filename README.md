@@ -12,6 +12,11 @@ Detail model dan keputusan teknis: **[docs/MODEL-15-dc00036tx.md](docs/MODEL-15-
 Status terakhir, link ISO, dan cara melanjutkan pekerjaan di mesin lain:
 **[HANDOFF.md](HANDOFF.md)**.
 
+Unit acuan sudah diperiksa langsung (2026-10-29): SKU `4NT40PA#AR6`, board
+**84DA**, i7-8750H, **GTX 1050 Ti 4 GB**, 16 GB single-channel, NVMe 128 GB +
+HDD 1 TB, Wi-Fi **Intel AC 9560**, audio **ALC295**, panel 1080p 60 Hz. Profil
+ISO, `omen-install`, dan `omen-probe` disesuaikan dengan konfigurasi itu.
+
 ---
 
 ## Isi
@@ -290,6 +295,8 @@ teruji: boot ISO di hardware Omen sungguhan dan pembangunan ISO itu sendiri.
 - Tidak ada GUI fan/RGB (CLI + TOML).
 - Undervolt CPU tidak disertakan (`intel-undervolt` bisa ditambah, tapi rawan).
 - Dukungan fan manual TUXOV pada 15-dc belum diketahui; daemon menguji saat start.
-- ISO belum diuji di unit 15-dc00036tx fisik. Mesin tempat ini dibuat adalah
-  **ASUS desktop (i5-10400 + RTX 2060)**. Jalankan `sudo omen-probe` di laptop
-  dan kirim hasilnya; kurva fan, zona RGB, dan quirk akan disesuaikan dari data itu.
+- ISO belum diuji di unit 15-dc00036tx fisik. Profil sekarang sudah dicocokkan
+  dengan hardware unit tersebut (board 84DA, GTX 1050 Ti, AC 9560, ALC295,
+  NVMe+HDD), tapi boot pertama tetap harus dilakukan. Jalankan
+  `sudo omen-probe > ~/omen-probe.txt` di live session dan kirim hasilnya;
+  kurva fan, zona RGB, dan quirk disesuaikan dari data itu.
