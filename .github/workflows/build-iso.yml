@@ -116,6 +116,8 @@ jobs:
               if [[ -n "$link" ]]; then
                 echo "link=$link" >> "$GITHUB_OUTPUT"
                 echo "LINK=$link" >> "$GITHUB_ENV"
+                # juga ke log supaya link bisa diambil dari API walau summary tidak terbaca
+                echo "LINK=$link"
                 exit 0
               fi
               echo "respons tanpa downloadPage: $resp" | head -c 500
