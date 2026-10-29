@@ -1,31 +1,95 @@
 #!/usr/bin/env bash
 # omen-install — instalasi OmenOS ke disk (UEFI + GPT). MENGHAPUS SELURUH DISK.
 #
-#   sudo omen-install /dev/nvme0n1
+#   sudo omen-install /dev/nvme0n1                      # target saja
+#   sudo omen-install /dev/nvme0n1 --data-disk /dev/sda # + HDD 1 TB sebagai /data
 #
-# Partisi: 1 GiB ESP (FAT32) + sisa disk sebagai root (ext4).
+# Unit 15-dc00036tx punya dua disk (NVMe 128 GB + HDD 1 TB), jadi:
+#   - target dan disk data divalidasi terpisah, dan disk USB/media instalasi
+#     ditolak sebagai target supaya ISO tidak menghapus dirinya sendiri;
+#   - disk data **tidak** disentuh kalau --data-disk tidak diberikan.
+#
+# Partisi target: 1 GiB ESP (FAT32) + sisa disk sebagai root (ext4, satu disk).
 # Dua kernel dipasang (linux + linux-lts) dengan entri boot terpisah, supaya
 # kalau update kernel merusak driver NVIDIA Anda masih bisa boot ke LTS.
 set -euo pipefail
-[[ $EUID -eq 0 ]] || { echo "jalankan dengan sudo"; exit 1; }
 
 log() { printf '\n==> %s\n' "$*"; }
-DISK="${1:-}"
+DISK=""
+DATA_DISK=""
 USERNAME="${OMEN_USER:-omen}"
 HOSTNAME_="${OMEN_HOSTNAME:-omen}"
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --data-disk)   DATA_DISK="${2:-}"; shift 2 ;;
+    --data-disk=*) DATA_DISK="${1#*=}"; shift ;;
+    -h|--help)     sed -n '2,14p' "$0"; exit 0 ;;
+    -*)            echo "argumen tidak dikenal: $1"; exit 2 ;;
+    *)             DISK="$1"; shift ;;
+  esac
+done
+
+[[ $EUID -eq 0 ]] || { echo "jalankan dengan sudo"; exit 1; }
+
+# Disk removable/USB tidak boleh jadi target: di live session, media instalasi
+# itu sendiri yang akan terhapus di tengah proses.
+is_removable() {
+  local dev="$1" name base tran
+  name="${dev#/dev/}"
+  base=$(basename "$(readlink -f "/sys/class/block/$name/..")" 2>/dev/null || echo "$name")
+  if [[ -r "/sys/block/$base/removable" && "$(cat "/sys/block/$base/removable")" == "1" ]]; then
+    return 0
+  fi
+  tran=$(lsblk -dpno TRAN "$dev" 2>/dev/null | tr -d ' ')
+  [[ "$tran" == "usb" ]]
+}
+
+check_disk() {
+  local dev="$1" role="$2"
+  [[ -b "$dev" ]] || { echo "bukan block device ($role): $dev"; exit 1; }
+  is_removable "$dev" && {
+    echo "$dev adalah disk removable/USB — tidak boleh dipakai sebagai $role."
+    echo "Media instalasi tidak bisa menjadi target pemasangan."
+    exit 1
+  }
+  return 0
+}
+
 if [[ -z "$DISK" ]]; then
   echo "Disk yang terdeteksi:"
-  lsblk -dpno NAME,SIZE,MODEL | sed 's/^/  /'
+  lsblk -dpno NAME,SIZE,MODEL,TRAN,RM | sed 's/^/  /'
   read -rp "Disk target (mis. /dev/nvme0n1): " DISK
 fi
-[[ -b "$DISK" ]] || { echo "bukan block device: $DISK"; exit 1; }
+check_disk "$DISK" "target"
 
-lsblk -o NAME,SIZE,MODEL "$DISK"
 echo
+echo "Target  $DISK:"
+lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT "$DISK" | sed 's/^/  /'
+echo
+echo "Disk lain (TIDAK disentuh):"
+lsblk -dpno NAME,SIZE,MODEL | grep -v "^$DISK " | sed 's/^/  /' || true
+echo
+if lsblk -no FSTYPE "$DISK" | grep -qE 'ntfs|vfat|exfat|ext4|btrfs'; then
+  echo "PERINGATAN: $DISK sudah berisi partisi/filesystem (lihat FSTYPE di atas)."
+  echo "             Semua itu akan dihapus, termasuk Windows bila ada di disk ini."
+  echo
+fi
 echo "SELURUH ISI $DISK AKAN DIHAPUS."
 read -rp "ketik ERASE untuk lanjut: " ok
 [[ "$ok" == "ERASE" ]] || { echo "dibatalkan"; exit 1; }
+
+if [[ -n "$DATA_DISK" ]]; then
+  check_disk "$DATA_DISK" "disk data"
+  [[ "$(readlink -f "$DATA_DISK")" != "$(readlink -f "$DISK")" ]] || {
+    echo "disk data tidak boleh sama dengan disk target"; exit 1
+  }
+  echo
+  echo "Disk data $DATA_DISK akan diformat ext4 (label OMENOS_DATA) dan dipasang di /data."
+  echo "SELURUH ISI $DATA_DISK AKAN DIHAPUS JUGA."
+  read -rp "ketik FORMAT untuk lanjut: " ok2
+  [[ "$ok2" == "FORMAT" ]] || { echo "dibatalkan"; exit 1; }
+fi
 
 read -rsp "Password root: " ROOTPW; echo
 read -rsp "Password user '$USERNAME': " USERPW; echo
@@ -49,6 +113,15 @@ mapfile -t PKGS < <(grep -vE '^\s*(#|$)' /root/packages.x86_64)
 pacstrap -K /mnt "${PKGS[@]}"
 
 genfstab -U /mnt >> /mnt/etc/fstab
+
+# Disk data (HDD 1 TB pada unit ini). Ditambahkan sebagai entri fstab sendiri
+# karena tidak ikut ter-mount saat instalasi; pakai UUID supaya tahan reorder.
+if [[ -n "$DATA_DISK" ]]; then
+  log "menyiapkan disk data $DATA_DISK (ext4, label OMENOS_DATA)"
+  mkfs.ext4 -F -L OMENOS_DATA "$DATA_DISK"
+  DATA_UUID=$(blkid -s UUID -o value "$DATA_DISK")
+  printf 'UUID=%s /data ext4 defaults,noatime 0 2\n' "$DATA_UUID" >> /mnt/etc/fstab
+fi
 
 # ------------------------------------------------------------------ pacman
 # pacstrap memakai pacman.conf milik live ISO, sehingga sistem hasil instalasi
@@ -93,9 +166,14 @@ echo "$HOSTNAME_" > /etc/hostname
 printf '127.0.0.1 localhost\n::1 localhost\n127.0.1.1 %s.localdomain %s\n' "$HOSTNAME_" "$HOSTNAME_" > /etc/hosts
 
 echo "root:$ROOTPW" | chpasswd
-useradd -m -G wheel,video,render,audio,input,power,storage -s /bin/bash "$USERNAME" || true
+useradd -m -G wheel,video,render,audio,input,power,storage,users -s /bin/bash "$USERNAME" || true
 echo "$USERNAME:$USERPW" | chpasswd
 sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+
+# /data (disk kedua) — grup users + setgid supaya isinya bisa dibagi ke akun lain.
+if grep -q ' /data ' /etc/fstab; then
+  install -d -m 2775 -o root -g users /data
+fi
 
 # initramfs: JANGAN tambahkan modul nvidia di sini. Driver belum terpasang;
 # modul yang tidak ada hanya menghasilkan error saat mkinitcpio. omen-setup
@@ -141,7 +219,7 @@ EOF
 done
 
 for s in NetworkManager bluetooth sddm omen-fan omen-rgb power-profiles-daemon \
-         fstrim.timer systemd-timesyncd avahi-daemon; do
+         thermald fstrim.timer systemd-timesyncd avahi-daemon; do
   systemctl enable "$s" 2>/dev/null || true
 done
 
@@ -190,6 +268,9 @@ log "selesai"
 umount -R /mnt
 echo
 echo "OmenOS terpasang. Cabut media instalasi lalu reboot."
+if [[ -n "$DATA_DISK" ]]; then
+  echo "Disk data $DATA_DISK diformat ext4 (label OMENOS_DATA) dan dipasang di /data."
+fi
 echo "Boot pertama akan menjalankan omen-setup (butuh internet)."
 echo "Kalau grafis bermasalah, pilih entri 'OmenOS (linux-lts)' di boot menu."
 echo "Cek hasilnya dengan:  omen-control status"

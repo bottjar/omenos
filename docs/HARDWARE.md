@@ -3,9 +3,9 @@
 ## Identifikasi model
 
 ```bash
-cat /sys/class/dmi/id/product_name    # mis. OMEN by HP Laptop 15-dc00036tx
-cat /sys/class/dmi/id/board_name      # mis. 84DB  <- nomor ini yang dipakai driver
-cat /sys/class/dmi/id/bios_version
+cat /sys/class/dmi/id/product_name    # unit ini: OMEN by HP Laptop 15-dc0xxx
+cat /sys/class/dmi/id/board_name      # unit ini: 84DA  <- nomor ini yang dipakai driver
+cat /sys/class/dmi/id/bios_version    # unit ini: F.19
 ```
 
 `board_name` adalah kunci: driver `hp-wmi` mencocokkan **board name**, bukan nama produk.
@@ -15,9 +15,14 @@ cat /sys/class/dmi/id/bios_version
 | Aspek | Nilai / keputusan |
 |---|---|
 | Seri | 15-dc0000 (~15-dc0999), 2018 |
-| Board | **84DB** (simulator BIOS HP), 84DA/84DB ada di `omen_thermal_profile_boards` |
-| CPU | i7-8750H / i5-8300H, HM370 |
-| GPU | Pascal: GTX 1050 / 1050 Ti / 1060 / 1070 Max-Q (tergantung SKU) |
+| SKU unit ini | **4NT40PA#AR6** |
+| Board | **84DA** (terverifikasi dari unit fisik), 84DA/84DB ada di `omen_thermal_profile_boards` |
+| CPU | **i7-8750H** 6C/12T, HM370 |
+| GPU | **GTX 1050 Ti 4 GB** (GP107, `10de:1c8c`) — SKU lain seri ini bisa 1050/1060/1070 Max-Q |
+| RAM | 16 GB DDR4-2667, satu keping (single-channel) |
+| Disk | NVMe 128 GB (sistem) + HDD 1 TB (`/data`) |
+| Jaringan | Intel Wireless-AC 9560 (`iwlwifi`), Realtek RTL8168 (`r8169`) |
+| Audio | Realtek ALC295 (`103c:84da`) |
 | Driver GPU | `nvidia-580xx-dkms` (AUR) — **bukan** `nvidia-open` |
 | Fan | hanya AUTO/MAX (mode `pwm1_enable`, tanpa `pwm1_max`) → backend `pwm-boost` |
 | RGB | 4 zona; LED kernel → TUXOV → pelrun → omen-rgb-keyboard |

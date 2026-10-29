@@ -6,20 +6,43 @@ karena model ini. Semua angka yang belum bisa dipastikan di hardware ditandai
 
 ## Identitas
 
+Dibaca langsung dari unit ini lewat WMI/CIM di Windows (2026-10-29), bukan dari
+spek pemasaran. Yang hanya bisa dipastikan dari Linux ditandai **verifikasi**.
+
 | Item | Nilai |
 |---|---|
-| Nama pemasaran | OMEN by HP Laptop 15-dc00036tx |
-| Generasi | 2018 (seri 15-dc0000, model number 15-dc0000~15-dc0999) |
-| Mainboard | **84DB** (BIOS simulator HP; 84DA/84DB ada di `omen_thermal_profile_boards`) — **verifikasi** dengan `cat /sys/class/dmi/id/board_name` |
-| CPU | Intel Core i7-8750H (6C/12T, 45 W) atau i5-8300H — **verifikasi** |
+| Nama pemasaran | OMEN by HP Laptop 15-dc0xxx (`product_name`), seri 2018 |
+| SKU | **4NT40PA#AR6** |
+| Mainboard | **84DA** (`board_name`), BIOS **AMI F.19** (2022-11-14) |
+| CPU | **Core i7-8750H**, 6C/12T, 45 W |
 | Chipset | Intel HM370 |
-| GPU | Pascal: GTX 1050 / 1050 Ti / 1060 / 1070 Max-Q, tergantung SKU — **verifikasi** dengan `lspci -nn \| grep -i nvidia` |
-| Keyboard | 4 zona RGB (WASD + tiga bagian vertikal) |
-| Layar | 15.6", 60/144 Hz tergantung SKU |
-| Baterai | 3/4-cell, ~70 Wh (cek `omen-probe`) |
+| GPU | **GeForce GTX 1050 Ti 4 GB**, GP107, `10de:1c8c` (subsystem `103c:84da`) |
+| GPU terpadu | Intel UHD Graphics 630 (Coffee Lake, Gen9.5) |
+| RAM | **16 GB DDR4-2667, satu keping** (slot 2) → single-channel |
+| Penyimpanan | **NVMe 128 GB** (Toshiba KBG30ZMV128G) + **SATA HDD 1 TB** (ST1000LM049) |
+| Wi-Fi / BT | **Intel Wireless-AC 9560**, `8086:a370`, driver `iwlwifi` |
+| Ethernet | Realtek RTL8168, driver `r8169` |
+| Audio | **Realtek ALC295**, subsystem `103c:84da` |
+| Layar | 15.6" **1920×1080 @60 Hz** |
+| Keyboard | RGB 4 zona (spesifikasi seri) — **verifikasi** `ls /sys/class/leds` |
+| Baterai | **verifikasi** `omen-probe` di Linux (WMI Windows tidak melaporkan Wh) |
 
-Yang penting: **semua GPU yang tersedia di seri ini adalah Pascal**, sehingga
-aturan driver di bawah berlaku untuk seluruh SKU 15-dc0000.
+Koreksi penting dibanding dokumen sebelumnya: GPU unit ini **GTX 1050 Ti**, bukan
+1060/1070 Max-Q, dan board-nya **84DA**, bukan 84DB. Keduanya tetap Pascal dan
+tetap memakai jalur `hp-wmi` yang sama, jadi keputusan driver/fan/RGB di bawah
+tidak berubah — yang jadi pasti hanya daya/panas, jalur Wi-Fi, dan audio.
+
+Konsekuensi praktis untuk mesin ini:
+
+- **Pascal** → tetap `nvidia-580xx-dkms` (bukan `nvidia-open`).
+- **Dua disk** → sistem di NVMe 128 GB, HDD 1 TB sebagai `/data`
+  (`omen-install --data-disk`). 128 GB cukup untuk sistem + dua kernel, tidak
+  untuk menyimpan ISO/game besar.
+- **Single-channel 16 GB** → zram tetap penting; bandwidth memori separuh
+  konfigurasi dua keping, jadi compile/build terasa lebih berat.
+- **iwlwifi 9560** → tidak butuh paket tambahan (firmware ada di `linux-firmware`).
+- **ALC295** → butuh `alsa-ucm-conf`; pop saat idle dimatikan lewat
+  `/etc/modprobe.d/omen-audio.conf`.
 
 ## 1. NVIDIA — wajib legacy 580xx
 
@@ -137,7 +160,8 @@ Untuk driver 580xx, service `nvidia-suspend`, `nvidia-resume`, dan
 
 ## 5. Hal yang belum terverifikasi
 
-- `board_name` 84DB berasal dari simulator BIOS HP, bukan dari unit fisik.
+- `board_name` unit ini **84DA** (terverifikasi lewat WMI, bukan 84DB seperti
+  dugaan awal dari simulator BIOS).
 - Dukungan fan manual TUXOV pada 15-dc **belum diketahui**; daemon menguji
   sendiri saat start.
 - Ketersediaan `hp::kbd_backlight` tergantung versi kernel. Kalau belum ada,

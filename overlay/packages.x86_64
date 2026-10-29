@@ -10,7 +10,7 @@ linux-lts
 linux-lts-headers
 linux-firmware
 intel-ucode
-amd-ucode
+# (amd-ucode tidak dipakai: 15-dc00036tx memakai Core i7-8750H / Coffee Lake)
 mkinitcpio
 systemd
 sudo
@@ -62,15 +62,18 @@ pipewire-pulse
 pipewire-alsa
 wireplumber
 alsa-utils
+alsa-ucm-conf
+# Realtek ALC295 (subsystem 103c:84da) butuh UCM agar speaker/headset terbaca benar
 sof-firmware
 firefox
 xdg-user-dirs
 
 # nvidia
 # TIDAK ada paket driver NVIDIA di sini — sengaja.
-#   - Omen 15-dc00036tx memakai GTX 1060/1070 Max-Q (Pascal). Arch 590+ dan
-#     nvidia-open hanya mendukung Turing ke atas, jadi GPU ini butuh
-#     nvidia-580xx-dkms dari AUR.
+#   - Unit ini (SKU 4NT40PA#AR6) memakai GTX 1050 Ti (GP107, 4 GB, 10de:1c8c),
+#     bukan 1060/1070 seperti dugaan awal. Semua SKU 15-dc0000 tetap Pascal,
+#     jadi aturan driver sama: Arch 590+ dan nvidia-open hanya mendukung Turing
+#     ke atas -> butuh nvidia-580xx-dkms dari AUR.
 #   - nvidia-prime bergantung pada nvidia-utils (driver 590) -> tidak dipakai;
 #     OmenOS mengirim skrip `prime-run` sendiri.
 # Driver dipilih otomatis oleh omen-setup saat boot pertama.
@@ -83,11 +86,19 @@ vulkan-icd-loader
 vulkan-tools
 mesa
 mesa-utils
+# VA-API di UHD 630 (Coffee Lake, Gen9.5) untuk decode video: hemat daya/panas
+# dibanding decode di CPU saat menonton di panel 1080p60.
+intel-media-driver
+libva-utils
 dkms
 hwdata
 
 # daya & termal
 power-profiles-daemon
+# thermald: jaga PL1/PL2 i7-8750H (45 W) tetap di batas HP saat boost,
+# mencegah throttle mendadak di chassis 15-dc yang ramping.
+thermald
+powertop
 zram-generator
 earlyoom
 irqbalance

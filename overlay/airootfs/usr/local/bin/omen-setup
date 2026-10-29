@@ -60,6 +60,15 @@ fi
 pacman -S --needed --noconfirm base-devel dkms git curl alsa-lib \
   linux-headers linux-lts-headers pciutils || warn "sebagian paket dasar gagal dipasang"
 
+# Paket yang khusus dibutuhkan hardware unit ini (i7-8750H + UHD 630 + ALC295).
+# `--needed` membuat langkah ini aman dijalankan ulang.
+pacman -S --needed --noconfirm intel-media-driver libva-utils alsa-ucm-conf \
+  || warn "paket media/audio tambahan gagal dipasang"
+if grep -qi 'GenuineIntel' /proc/cpuinfo; then
+  pacman -S --needed --noconfirm thermald \
+    || warn "thermald gagal dipasang (PL1/PL2 i7-8750H akan diatur BIOS/EC saja)"
+fi
+
 if grep -q '^\[multilib\]' /etc/pacman.conf; then
   log "memasang paket 32-bit (Steam/Wine)"
   pacman -S --needed --noconfirm lib32-mesa lib32-vulkan-icd-loader \
@@ -94,6 +103,7 @@ detect_gpu() {
 
 [[ "$GPU" == "auto" ]] && GPU=$(detect_gpu)
 log "driver NVIDIA: $GPU"
+lspci -nn 2>/dev/null | grep -Ei 'vga|3d|display' | sed 's/^/  GPU: /' || true
 
 install_legacy_nvidia() {
   log "memasang NVIDIA 580xx (legacy, Pascal/Maxwell) dari AUR"
@@ -266,7 +276,7 @@ fi
 # --------------------------------------------------------- 4. layanan & initramfs
 log "mengaktifkan layanan"
 for s in NetworkManager bluetooth sddm power-profiles-daemon \
-         fstrim.timer systemd-timesyncd avahi-daemon; do
+         fstrim.timer systemd-timesyncd avahi-daemon thermald; do
   systemctl enable "$s" 2>/dev/null || echo "  lewati $s"
 done
 if [[ $SKIP_FAN -eq 0 ]]; then

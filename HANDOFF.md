@@ -6,13 +6,14 @@ setelah OmenOS terpasang) atau setelah percakapan lama tidak tersedia.
 ## 1. Tujuan
 
 Distro Linux berbasis **Arch Linux** (remaster `archiso`) untuk **HP OMEN
-15-dc00036tx** (seri 15-dc0000, 2018, Coffee Lake + GTX 1060/1070 Max-Q Pascal,
+15-dc00036tx** (seri 15-dc0000, 2018, Coffee Lake i7-8750H + GTX 1050 Ti Pascal,
 keyboard RGB 4 zona). Yang wajib jalan: driver NVIDIA, kontrol fan, kontrol RGB.
 
 ## 2. Status per 2026-10-29
 
 | Item | Nilai |
 |---|---|
+| Hardware | **terverifikasi** 2026-10-29: board 84DA, i7-8750H, GTX 1050 Ti 4 GB, 16 GB single-channel, NVMe 128 GB + HDD 1 TB, Intel AC 9560, ALC295 |
 | ISO | `omenos-2026.10.29-x86_64.iso`, 3.790.602.240 byte (3,8 GB) |
 | SHA256 | `a21e4e561e5cfacf4ae64dda9cc0d6546c936cdc1e25d633c56f0001c23f40e7` |
 | Link | https://gofile.io/d/1UVA59Zh (publik, mungkin kedaluwarsa) |
@@ -82,8 +83,11 @@ docs/MODEL-15-dc00036tx.md  # detail model ini
 5. Install (menghapus seluruh disk):
    ```bash
    lsblk
-   omen-install /dev/nvme0n1     # konfirmasi "ERASE"
+   omen-install /dev/nvme0n1 --data-disk /dev/sda   # konfirmasi "ERASE" + "FORMAT"
    ```
+   Unit ini: sistem ke NVMe 128 GB, HDD 1 TB jadi `/data` (ext4, label
+   `OMENOS_DATA`). Tanpa `--data-disk`, HDD tidak disentuh sama sekali.
+   Disk USB/media instalasi otomatis ditolak sebagai target.
 6. Boot pertama: `journalctl -u omen-setup-once -f` (driver NVIDIA dari AUR).
    Retry otomatis tiap 15 menit sampai `/var/lib/omen/setup-done` ada.
 7. Setelah driver terpasang: reboot, cek `prime-run glxinfo | grep "OpenGL renderer"`.
