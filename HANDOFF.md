@@ -24,7 +24,7 @@ melaporkan `IsSwFanControlSupport=False` dan keyboard bukan 4 zona.
 | Build | GitHub Actions `success`, ±14 menit (05:12→05:28 UTC) |
 | Repo | https://github.com/bottjar/omenos |
 | Run | https://github.com/bottjar/omenos/actions/runs/40822270085 (commit `d2c3b14`) |
-| USB | sudah ditulis 2026-10-29 ke SanDisk Ultra 29 GB (disk 2) mode DD, baca-balik SHA256 identik; berisi build **`4d9994c`** (bukan yang terbaru); **belum** boot-test |
+| USB | sudah ditulis ulang 2026-10-29 ke SanDisk Ultra 29 GB (disk 2) mode DD dengan build **`d2c3b14`**; baca-balik SHA256 `0acad262…` identik; **belum** boot-test |
 
 ISO **belum pernah di-boot** di hardware Omen. Semua uji sejauh ini: `bash -n`,
 `shellcheck -S warning`, dan `tests/selftest.py` (11 skenario, semua lolos).
@@ -95,15 +95,27 @@ docs/OMEN-APP-RE.md         # hasil bongkar aplikasi OMEN (fan/termal/RGB)
    Windows tidak memberi huruf drive. Tidak perlu Rufus (lihat di bawah).
 2. Omen: **F9** → USB **UEFI**; Secure Boot **off**.
 3. Live session: autologin user `omen`, password `omen`.
-4. Uji cepat:
+4. Uji cepat (fokus termal/fan Linux):
    ```bash
    sudo omen-probe > ~/omen-probe.txt
    omen-control status
+   cat /sys/firmware/acpi/platform_profile_choices 2>/dev/null || echo "tidak ada (normal)"
+   ls /sys/class/hwmon/*/name; sensors 2>/dev/null | head -40
+   ls /sys/bus/wmi/devices
+   dmesg | grep -iE 'hp_wmi|hp-wmi|zero instances|No usable fans'
+   sudo modprobe ec_sys
+   od -An -tx1 -j 149 -N1 /sys/kernel/debug/ec/ec0/io
+   omen-control fan max      # kalau backend pwm-boost
+   omen-control fan auto
+   # tulis EC (opsional, eksplisit):
+   sudo modprobe -r ec_sys && sudo modprobe ec_sys write_support=1
+   sudo omen-control fan cool
    omen-control rgb set FF0000
-   omen-control fan max
    ls /sys/class/leds | grep -i kbd
-   ls /sys/devices/platform/hp-wmi/ 2>/dev/null
    ```
+   Kirim `~/omen-probe.txt` + output blok di atas. Yang menentukan backend
+   final: ada/tidaknya hwmon `hp` (`fan*_input`, `pwm1_enable`), dan apakah
+   EC `0x95` menerima `0x02` tanpa langsung kembali.
 5. Install (menghapus seluruh disk):
    ```bash
    lsblk
@@ -130,8 +142,9 @@ nama mengandung `SanDisk`, ukuran 25–32 GB, dan ukuran ISO tepat
 `3800973312` byte. Jangan pernah menjalankan `clean` pada nomor disk yang belum
 dicek ulang dengan `Get-Disk`.
 
-Hasil tulis: 3.800.973.312 byte dalam ±9,5 menit (≈6,7 MB/s, USB 2.0),
-verifikasi baca-balik 41 detik.
+Hasil tulis ulang (build `d2c3b14`): 3.800.973.312 byte dalam 627 detik
+(≈5,8 MB/s, USB 2.0), verifikasi baca-balik 42 detik. Log:
+`D:\omenos-iso\write.log` dan `D:\omenos-iso\verify.log` (tidak masuk repo).
 
 ### Akses jarak jauh untuk pengujian
 

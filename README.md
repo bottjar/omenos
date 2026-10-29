@@ -49,8 +49,8 @@ rilis GitHub yang jadi acuan).
 
 Isi build ini: `omen-control` tidak lagi mengklaim sukses saat driver menolak
 `pwm1_enable`, `fan cool` selalu lewat EC di 84DA/84DB, `omen-probe` mencetak
-hwmon `fan*_input` + `dmesg zero instances`. USB yang sudah ditulis berisi
-build **sebelumnya** (`4d9994c`); tulis ulang hanya kalau perlu.
+hwmon `fan*_input` + `dmesg zero instances`. USB SanDisk sudah ditulis ulang
+dengan ISO ini (SHA256 baca-balik identik, 2026-10-29 12.56 WIB).
 
 ### Menyiapkan USB
 
