@@ -53,6 +53,14 @@ for c in 0 1; do
 done
 cat /sys/class/thermal/thermal_zone*/type 2>/dev/null | tr '\n' ' '; echo
 
+hr "EC / KIPAS"
+# Reverse engineering OMEN Command Center: board 84DA/84DB (Gamora10, Omen
+# 15-dc0000) melaporkan IsSwFanControlSupport=False -> kipas milik EC, tanpa PWM.
+echo "harapan 84DA/84DB: tanpa pwm1, kipas dikendalikan EC (lihat docs/OMEN-APP-RE.md)"
+echo "modul ec_sys: $(lsmod 2>/dev/null | grep -c '^ec_sys')"
+ls /sys/kernel/debug/ec 2>/dev/null || echo "(debugfs EC tidak diekspos)"
+dmesg 2>/dev/null | grep -iE 'ACPI.*(EC|fan)|thermal zone' | tail -10 || true
+
 hr "MODUL TERKAIT"
 lsmod | grep -Ei 'hp_wmi|omen|nvidia|sparse_keymap' || echo "(tidak ada)"
 echo

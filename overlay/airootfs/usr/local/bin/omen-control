@@ -17,6 +17,13 @@ FAN
                    -> quiet / balanced / performance
   (none)           tidak ada apa pun; daemon berhenti dengan pesan jelas
 
+CATATAN BOARD 84DA (Omen 15-dc0000, mis. 15-dc00036tx)
+  Firmware HP sendiri melaporkan `IsSwFanControlSupport = False` dan
+  `IsBiosPerformanceControlSupport = False` (lihat docs/OMEN-APP-RE.md), jadi
+  kipas di mesin ini dikendalikan EC dan TIDAK punya PWM. Backend yang benar
+  adalah `thermald` + governor CPU, bukan menulis pwm1. Mode `Cool` adalah
+  satu-satunya tuas termal firmware dan belum diekspos kernel Linux.
+
 RGB
   zones            /sys/devices/platform/.../rgb_zones/zone00..03
                    (driver hp-wmi patch / omen-rgb-keyboard / pelrun)
@@ -82,6 +89,14 @@ PROFILE_ALIASES = {
     "performance": ("performance",),
 }
 
+# Board yang firmware-nya sendiri menyatakan tidak punya kontrol fan software.
+# 84DA/84DB = Omen 15-dc0000 (platform Gamora10), hasil reverse engineering
+# OMEN Command Center: IsSwFanControlSupport = False (docs/OMEN-APP-RE.md).
+EC_ONLY_BOARDS = {
+    "84DA": "Omen 15-dc0000 (Gamora10)",
+    "84DB": "Omen 15-dc1000 (Gamora10)",
+}
+
 
 # ----------------------------------------------------------------- utilities
 def read(path, default=None):
@@ -117,6 +132,20 @@ def load_toml(path, fallback):
 
 def natural_key(text):
     return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", text)]
+
+
+def board_name():
+    return (read("/sys/class/dmi/id/board_name", "") or "").strip()
+
+
+def ec_only_note():
+    """Penjelasan untuk board yang kipasnya memang milik EC (tanpa PWM)."""
+    board = board_name()
+    if board in EC_ONLY_BOARDS:
+        return (f"board {board} = {EC_ONLY_BOARDS[board]}: kipas dikendalikan EC, "
+                "tanpa PWM. Firmware HP sendiri melaporkan IsSwFanControlSupport=False; "
+                "kendali termal yang benar = thermald + governor CPU")
+    return None
 
 
 # Urutan fisik zona LED TUXOV: kiri (WASD) -> left -> center -> right.
@@ -493,6 +522,9 @@ def daemon_fan():
         log("tidak ada kontrol fan yang tersedia. Jalankan `omen-control status` "
             "dan cek dmesg untuk error ACPI/WMI. Model dengan ACPI rusak "
             "(mis. board 8BCA) tidak bisa dikendalikan dari software.")
+        note = ec_only_note()
+        if note:
+            log(f"catatan: {note}")
         log("daemon berhenti (exit 0) agar systemd tidak me-restart terus-menerus; "
             "setelah driver terpasang jalankan: systemctl restart omen-fan")
         return 0
@@ -628,6 +660,10 @@ def daemon_rgb():
         log("tidak ada antarmuka RGB. Kemungkinan: keyboard bukan 4-zona, driver "
             "belum terpasang, atau kernel belum mengekspos hp::kbd_backlight. "
             "Jalankan `omen-probe` lalu lihat bagian RGB ZONES.")
+        if board_name() in EC_ONLY_BOARDS:
+            log("catatan: aplikasi OMEN di board ini melaporkan keyboardType=0 dan "
+                "tidak ada perangkat FourZone; backlight-nya satu warna lewat EC/Fn, "
+                "jadi tidak ada yang bisa diatur dari Linux.")
         log("daemon berhenti (exit 0); setelah driver terpasang jalankan: "
             "systemctl restart omen-rgb")
         return 0
@@ -672,6 +708,9 @@ def cmd_status(_):
     print(f"fan backend  : {fan.capability()}"
           + ("  (PWM manual belum diverifikasi; daemon menguji saat start)"
              if fan.capability() == "pwm-manual" and not fan.manual else ""))
+    note = ec_only_note()
+    if note and fan.capability() == "none":
+        print(f"fan catatan  : {note}")
     print(f"fan rpm      : {fan.rpm() or 'tidak terbaca'}")
     print(f"profile      : {fan.profile()}  (pilihan: {' '.join(fan.profile_choices()) or '-'})")
     print(f"rgb backend  : {rgb.describe()}")
@@ -694,8 +733,10 @@ def cmd_fan(args):
     action = args[0]
 
     if cap == "none":
+        note = ec_only_note()
         sys.exit("tidak ada backend fan (PWM maupun platform_profile). "
-                 "Jalankan `omen-control status` dan periksa log ACPI.")
+                 "Jalankan `omen-control status` dan periksa log ACPI."
+                 + (f"\n{note}." if note else ""))
 
     if action == "boost":
         if len(args) < 2 or args[1] not in ("on", "off"):

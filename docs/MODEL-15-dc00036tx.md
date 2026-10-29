@@ -24,13 +24,16 @@ spek pemasaran. Yang hanya bisa dipastikan dari Linux ditandai **verifikasi**.
 | Ethernet | Realtek RTL8168, driver `r8169` |
 | Audio | **Realtek ALC295**, subsystem `103c:84da` |
 | Layar | 15.6" **1920×1080 @60 Hz** |
-| Keyboard | RGB 4 zona (spesifikasi seri) — **verifikasi** `ls /sys/class/leds` |
+| Keyboard | **backlight putih satu warna** (bukan RGB 4 zona) — `keyboardType=0` dari aplikasi OMEN |
 | Baterai | **verifikasi** `omen-probe` di Linux (WMI Windows tidak melaporkan Wh) |
 
 Koreksi penting dibanding dokumen sebelumnya: GPU unit ini **GTX 1050 Ti**, bukan
 1060/1070 Max-Q, dan board-nya **84DA**, bukan 84DB. Keduanya tetap Pascal dan
 tetap memakai jalur `hp-wmi` yang sama, jadi keputusan driver/fan/RGB di bawah
 tidak berubah — yang jadi pasti hanya daya/panas, jalur Wi-Fi, dan audio.
+Spesifikasi seri menyebut RGB 4 zona, tetapi unit `4NT40PA#AR6` yang diperiksa
+**tidak** punya: aplikasi OMEN sendiri melaporkan `keyboardType = 0` dan tidak
+menemukan perangkat `FourZone` (detail di [OMEN-APP-RE.md](OMEN-APP-RE.md)).
 
 Konsekuensi praktis untuk mesin ini:
 
@@ -75,6 +78,15 @@ sudo pacman -S nvidia nvidia-open nvidia-open-dkms nvidia-utils nvidia-prime
 
 ## 2. Fan — hanya AUTO atau MAX
 
+> **Bukti dari firmware (2026-10-29).** Aplikasi OMEN asli di unit ini mencatat
+> `IsSwFanControlSupport = False` dan `IsBiosPerformanceControlSupport = False`
+> (board 84DA, platform Gamora10). Artinya **HP sendiri tidak punya kontrol kipas
+> software di mesin ini**: kipas dikendalikan EC dengan kurva tertutup, dan mode
+> `Cool` adalah satu-satunya tuas termal firmware. Detail dan buktinya ada di
+> [OMEN-APP-RE.md](OMEN-APP-RE.md). Jadi kalau Linux tidak mengekspos PWM sama
+> sekali, itu **bukan** kegagalan OmenOS — memang tidak ada yang bisa ditulis.
+> Jalur yang benar untuk mesin ini adalah `thermald` + governor CPU.
+
 `hp-wmi` untuk board 84DA/84DB tidak punya PWM proporsional:
 
 ```
@@ -112,6 +124,12 @@ Kalau driver menolak (`EOPNOTSUPP`), daemon kembali ke mode auto/max dan
 menulis alasannya ke journal — tidak ada loop error.
 
 ## 3. RGB keyboard 4 zona
+
+> **Catatan untuk SKU ini.** `4NT40PA#AR6` dilaporkan aplikasi OMEN dengan
+> `keyboardType = 0` dan tidak punya perangkat `FourZone` yang terpasang, jadi
+> keyboard-nya **bukan** RGB 4 zona: hanya backlight putih satu warna lewat EC/Fn.
+> Backend di bawah tetap benar untuk model lain (dan untuk keyboard eksternal
+> OMEN), tetapi di unit ini `omen-rgb` akan berhenti dengan pesan yang jelas.
 
 Urutan backend yang dipakai `omen-control`:
 

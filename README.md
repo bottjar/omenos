@@ -1,14 +1,15 @@
 # OmenOS
 
 Distro Linux berbasis **Arch Linux** (remaster `archiso`) yang dikonfigurasi untuk
-**HP OMEN 15-dc00036tx** (seri 15-dc0000, 2018): driver NVIDIA Pascal, kontrol fan,
-dan RGB keyboard 4 zona sudah disiapkan.
+**HP OMEN 15-dc00036tx** (seri 15-dc0000, 2018): driver NVIDIA Pascal, termal
+i7-8750H, dan deteksi fan/RGB yang jujur sesuai kemampuan firmware mesin.
 
 Bukan from-scratch: membangun distro dari nol (LFS) butuh berminggu-minggu dan hasilnya
 tidak lebih baik untuk kebutuhan ini. Yang menentukan kualitas di sini adalah
 **pemilihan paket, parameter kernel, dan daemon fan/RGB** — semuanya ada di repo ini.
 
 Detail model dan keputusan teknis: **[docs/MODEL-15-dc00036tx.md](docs/MODEL-15-dc00036tx.md)**.
+Hasil bongkar aplikasi OMEN (jalur fan/RGB ke firmware): **[docs/OMEN-APP-RE.md](docs/OMEN-APP-RE.md)**.
 Status terakhir, link ISO, dan cara melanjutkan pekerjaan di mesin lain:
 **[HANDOFF.md](HANDOFF.md)**.
 
@@ -245,7 +246,8 @@ omen-os/
 ├─ tests/selftest.py           # uji tanpa hardware
 └─ docs/
    ├─ HARDWARE.md              # matriks model, quirk ACPI, risiko
-   └─ MODEL-15-dc00036tx.md    # detail model ini
+   ├─ MODEL-15-dc00036tx.md    # detail model ini
+   └─ OMEN-APP-RE.md           # hasil bongkar aplikasi OMEN (fan/RGB/firmware)
 ```
 
 ---
