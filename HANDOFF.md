@@ -17,15 +17,21 @@ melaporkan `IsSwFanControlSupport=False` dan keyboard bukan 4 zona.
 | Item | Nilai |
 |---|---|
 | Hardware | **terverifikasi** 2026-10-29: board 84DA, i7-8750H, GTX 1050 Ti 4 GB, 16 GB single-channel, NVMe 128 GB + HDD 1 TB, Intel AC 9560, ALC295 |
-| ISO | `omenos-2026.10.29-x86_64.iso`, 3.790.602.240 byte (3,8 GB) |
-| SHA256 | `a21e4e561e5cfacf4ae64dda9cc0d6546c936cdc1e25d633c56f0001c23f40e7` |
-| Link | https://gofile.io/d/1UVA59Zh (publik, mungkin kedaluwarsa) |
-| Build | GitHub Actions `success`, ±9 menit |
+| ISO | `omenos-2026.10.29-x86_64.iso`, **3.800.973.312 byte** (3,8 GB) |
+| SHA256 | `b4dd00ebed02d344009abad2b29d4d5ca4b5be15157f9d80b72a55957cb70c7f` |
+| Link (permanen) | https://github.com/bottjar/omenos/releases/tag/build-20261029-042850 (2 part + `.sha256`) |
+| Link (1 file) | https://gofile.io/d/TPwfMIvZ (publik, bisa kedaluwarsa) |
+| Build | GitHub Actions `success`, ±12 menit (04:16→04:31 UTC) |
 | Repo | https://github.com/bottjar/omenos |
-| Run | https://github.com/bottjar/omenos/actions/runs/40809835551 |
+| Run | https://github.com/bottjar/omenos/actions/runs/40816829565 (commit `4d9994c`) |
 
 ISO **belum pernah di-boot** di hardware Omen. Semua uji sejauh ini: `bash -n`,
 `shellcheck -S warning`, dan `tests/selftest.py` (9 skenario, semua lolos).
+
+Rilis sekarang dibuat sebagai **draft**, semua asset diunggah, baru
+dipublikasikan (`gh release edit --draft=false`). Build yang dibatalkan saat
+upload tidak lagi meninggalkan rilis publik kosong; draft sisa dibersihkan
+otomatis di awal run berikutnya.
 
 Build ulang kapan saja: push ke `main`, atau Actions → **Build ISO** → *Run
 workflow*. Hasil: link gofile di ringkasan run; cadangan artifact/Release.

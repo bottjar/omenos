@@ -33,9 +33,19 @@ Setiap build menghasilkan satu rilis `build-YYYYMMDD-HHMMSS` berisi:
 | `omenos-*.iso.sha256` | checksum ISO utuh |
 
 Rilis juga menyimpan SHA256 + commit sumber di deskripsinya. Build terbaru juga
-diunggah ke **gofile.io** sebagai unduhan satu file; link-nya hanya ada di
-ringkasan run Actions untuk build tersebut (mudah kedaluwarsa, jadi rilis GitHub
-yang jadi acuan).
+diunggah ke **gofile.io** sebagai unduhan satu file (mudah kedaluwarsa, jadi
+rilis GitHub yang jadi acuan).
+
+### Build terakhir (2026-10-29)
+
+| Item | Nilai |
+|---|---|
+| ISO | `omenos-2026.10.29-x86_64.iso` — 3.800.973.312 byte (3,8 GB) |
+| SHA256 | `b4dd00ebed02d344009abad2b29d4d5ca4b5be15157f9d80b72a55957cb70c7f` |
+| Rilis (permanen) | <https://github.com/bottjar/omenos/releases/tag/build-20261029-042850> |
+| gofile (1 file) | <https://gofile.io/d/TPwfMIvZ> |
+| Run Actions | <https://github.com/bottjar/omenos/actions/runs/40816829565> |
+| Commit | `4d9994c` |
 
 ### Menyiapkan USB
 
