@@ -12,9 +12,14 @@ FAN
                    -> persen PWM benar-benar diterapkan
   pwm-boost        hanya mode 0/2 (max/auto) lewat `pwm1_enable` (atau `pwm1`);
                    ini yang dipakai Omen 2018
-                   (15-dc0000, board 84DA/84DB) -> kurva jadi on/off cerdas
+                   (15-dc0000, board 84DA/84DB) -> kurva jadi on/off cerdas.
+                   Di 84DA tulis 0 memakai WMI 0x27 (bukan 0x28 yang gagal);
+                   tulis 1/manual ditolak firmware (-EOPNOTSUPP).
   platform-profile hanya /sys/firmware/acpi/platform_profile
                    -> quiet / balanced / performance
+  ec-profile       board 84DA/84DB tanpa hwmon fan: profil termal RAM EC 0x95
+                   (0x00 balanced / 0x01 performance / 0x02 cool) lewat ec_sys.
+                   Hanya perintah eksplisit `fan cool`; daemon tidak menulis EC.
   (none)           tidak ada apa pun; daemon berhenti dengan pesan jelas
 
 CATATAN BOARD 84DA (Omen 15-dc0000, mis. 15-dc00036tx)
@@ -22,11 +27,13 @@ CATATAN BOARD 84DA (Omen 15-dc0000, mis. 15-dc00036tx)
   `IsBiosPerformanceControlSupport = False` (lihat docs/OMEN-APP-RE.md), jadi
   kipas di mesin ini dikendalikan EC dan TIDAK punya PWM. Backend yang benar
   adalah `thermald` + governor CPU, bukan menulis pwm1.
-  Satu-satunya tuas firmware adalah profil termal di RAM EC: offset 0x95,
+  Tuas manual terakhir adalah profil termal di RAM EC: offset 0x95,
   nilai V0 0x00=balanced, 0x01=performance, 0x02=cool. Kernel membaca byte ini
   (`ec_read`) tetapi tidak mengekspos `platform_profile` karena query desain
   WMI 0x28 gagal di BIOS F.19. Karena itu OmenOS menyediakan jalur eksplisit
   `omen-control fan cool` lewat modul `ec_sys` (bukan otomatis oleh daemon).
+  `hp-wmi-sensors` tidak terdaftar di 84DA (GUID 8F1F6435: instance_count=0);
+  RPM hanya mungkin dari hwmon `hp` (WMI 0x10/0x11).
 
 RGB
   zones            /sys/devices/platform/.../rgb_zones/zone00..03
@@ -350,31 +357,30 @@ class Fan:
     def auto(self):
         if self.has_pwm():
             # 2 = kontrol otomatis EC (berlaku untuk pwm1 maupun pwm1_enable).
-            self._set_mode(2)
-        else:
-            # Tanpa PWM, profil termal ADALAH kontrol fan. Kalau PWM ada,
-            # jangan sentuh profil: power-profiles-daemon / pilihan pengguna
-            # yang berhak menentukan PL1/PL2.
-            self.set_profile("balanced")
-        return True
+            return self._set_mode(2)
+        # Tanpa PWM, profil termal ADALAH kontrol fan. Kalau PWM ada,
+        # jangan sentuh profil: power-profiles-daemon / pilihan pengguna
+        # yang berhak menentukan PL1/PL2.
+        return self.set_profile("balanced")
 
     def max(self):
+        ok = True
         if self.has_pwm():
             if self.manual or self.manual_hint:
                 # mode 0 = MAX; kalau ditolak, paksa manual 255.
                 if self.pwm_enable is not None:
-                    if not write(self.pwm_enable, 0) and self.pwm is not None:
-                        write(self.pwm_enable, 1)
-                        write(self.pwm, 255)
+                    ok = write(self.pwm_enable, 0)
+                    if not ok and self.pwm is not None:
+                        ok = write(self.pwm_enable, 1) and write(self.pwm, 255)
                 elif self.pwm is not None:
-                    write(self.pwm, 255)
+                    ok = write(self.pwm, 255)
             else:
-                self._set_mode(0)           # 0 = fan boost penuh
+                ok = self._set_mode(0)      # 0 = fan boost penuh
         else:
-            self.set_profile("performance")
+            ok = self.set_profile("performance")
         if self.boost.exists():
-            write(self.boost, 1)
-        return True
+            ok = write(self.boost, 1) and ok
+        return bool(ok)
 
     def set_boost(self, on):
         if self.has_pwm():
@@ -591,7 +597,8 @@ def daemon_fan():
         return 0
 
     state = {"mode": "auto", "target": None}
-    fan.auto()
+    if not fan.auto():
+        log("peringatan: driver menolak mode otomatis saat start")
 
     def restore(*_):
         log("keluar, mengembalikan kontrol otomatis ke EC")
@@ -854,8 +861,14 @@ def cmd_fan(args):
     cap = fan.capability()
     action = args[0]
 
-    if (cap == "none" and board_name() in EC_ONLY_BOARDS
-            and action in ("cool", "max", "auto", "quiet", "balanced", "performance")):
+    ec_board = board_name() in EC_ONLY_BOARDS
+    if ec_board and action == "cool":
+        ec_fan_action(fan, action)
+        print("fan -> cool (backend ec-profile, board EC-only)")
+        return
+
+    if (ec_board and cap == "none"
+            and action in ("max", "auto", "quiet", "balanced", "performance")):
         ec_fan_action(fan, action)
         print(f"fan -> {action} (backend ec-profile, board EC-only)")
         return
@@ -879,9 +892,21 @@ def cmd_fan(args):
         sys.exit(daemon_fan())
 
     if action == "auto":
-        fan.auto()
+        if not fan.auto():
+            node = fan.mode_node()
+            hint = (f"node {node} menolak nilai 2" if node is not None
+                    else "tidak ada node mode kipas")
+            sys.exit(f"gagal mengembalikan kipas ke otomatis: {hint}. "
+                     "Pada board EC-only (84DA/84DB) pakai "
+                     "`sudo omen-control fan cool|auto` lewat ec_sys.")
     elif action == "max":
-        fan.max()
+        if not fan.max():
+            node = fan.mode_node()
+            hint = (f"node {node} menolak mode max" if node is not None
+                    else "tidak ada node mode kipas")
+            sys.exit(f"gagal menaikkan kipas ke max: {hint}. "
+                     "Pada board EC-only (84DA/84DB) firmware tidak punya "
+                     "mode kipas penuh; pakai `sudo omen-control fan cool`.")
     elif action == "quiet":
         if not fan.set_profile("quiet"):
             if not fan.set_percent(20):

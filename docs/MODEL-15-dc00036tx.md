@@ -84,8 +84,9 @@ sudo pacman -S nvidia nvidia-open nvidia-open-dkms nvidia-utils nvidia-prime
 > software di mesin ini**: kipas dikendalikan EC dengan kurva tertutup, dan mode
 > `Cool` adalah satu-satunya tuas termal firmware. Detail dan buktinya ada di
 > [OMEN-APP-RE.md](OMEN-APP-RE.md). Jadi kalau Linux tidak mengekspos PWM sama
-> sekali, itu **bukan** kegagalan OmenOS — memang tidak ada yang bisa ditulis.
-> Jalur yang benar untuk mesin ini adalah `thermald` + governor CPU.
+> sekali, itu **bukan** kegagalan OmenOS — memang tidak ada PWM proporsional.
+> Jalur normal untuk mesin ini adalah `thermald` + governor CPU; tuas manual
+> terakhir adalah profil EC `0x95` (lihat di bawah).
 
 `hp-wmi` untuk board 84DA/84DB tidak punya PWM proporsional:
 
@@ -103,11 +104,18 @@ Tidak ada `pwm1_max` dan tidak ada PWM proporsional. Menulis `40` ke `pwm1`
 tidak berarti 40% — driver memperlakukannya sebagai mode. Maka:
 
 - Backend terdeteksi: **`pwm-boost`** (lewat `pwm1_enable` bila `pwm1` tidak ada).
-- Kalau kernel sangat baru hanya mendaftarkan hwmon untuk model yang punya
-  tabel fan, 15-dc bisa tidak punya file PWM sama sekali. Dalam hal itu
-  `omen-control` memakai backend **`platform-profile`** (84DA/84DB terdaftar
-  di `omen_thermal_profile_boards`) dan menaikkan profil termal saat panas.
-  Cek hasil deteksi dengan `omen-control status`.
+  Di 84DA menulis `0` memakai WMI `0x27`, bukan `0x28` yang gagal, jadi MAX
+  masih mungkin bekerja; `pwm1_enable=1` (manual) tetap ditolak firmware.
+- Kalau hwmon `hp` tidak mendaftar sama sekali (`dmesg`: `No usable fans
+  reported by WMI`), tidak ada file PWM. `platform_profile` **juga tidak ada**
+  di 84DA/84DB: `hp-wmi` gagal di `thermal_profile_setup()` karena query desain
+  WMI `0x28` mengembalikan `returnCode=3` (bukan karena ACPI rusak). Dalam hal
+  itu `omen-control` memakai backend **`ec-profile`**: `fan cool` menulis
+  `0x95=0x02` lewat `ec_sys` (eksplisit, diverifikasi baca ulang), `fan auto`
+  → `0x00`. Cek hasil deteksi dengan `omen-control status`.
+- RPM: `hp-wmi-sensors` **tidak terdaftar** di 84DA (`_WDG` GUID `8F1F6435`
+  punya `instance_count=0`), jadi `fan*_input` hanya mungkin dari hwmon `hp`
+  (WMI `0x10`/`0x11`). Kalau tidak ada, RPM memang tidak terbaca di Linux.
 - Kurva menjadi on/off dengan histeresis:
   - `boost_on_c = 76` → fan MAX
   - `boost_off_c = 68` → kembali AUTO
@@ -200,7 +208,9 @@ membangunkan GPU diskrit hanya untuk menonton.
 - `board_name` unit ini **84DA** (terverifikasi lewat WMI, bukan 84DB seperti
   dugaan awal dari simulator BIOS).
 - Dukungan fan manual TUXOV pada 15-dc **belum diketahui**; daemon menguji
-  sendiri saat start.
+  sendiri saat start. `hp-wmi-sensors` dipastikan tidak ada di 84DA; apakah
+  hwmon `hp` memberi RPM, dan apakah EC menerima `0x95=0x02`, baru bisa
+  dijawab dari live session.
 - Ketersediaan `hp::kbd_backlight` tergantung versi kernel. Kalau belum ada,
   `omen-setup` memasang TUXOV, lalu pelrun sebagai fallback.
 - Watt/thermal limit CPU (PL1/PL2) tidak diubah. Undervolt tidak disertakan.
@@ -213,8 +223,9 @@ lspci -nn | grep -i nvidia
 nvidia-smi
 cat /sys/power/mem_sleep
 omen-control status
-omen-control fan max      # dengarkan fan naik
+omen-control fan max      # dengarkan fan naik (kalau backend pwm-boost ada)
 omen-control fan auto
+sudo modprobe ec_sys && sudo omen-control fan cool   # jalur EC (bila tanpa hwmon)
 omen-control rgb set FF0000
 journalctl -u omen-fan -u omen-rgb -b --no-pager | tail -40
 sudo omen-probe > ~/omen-probe.txt

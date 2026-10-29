@@ -112,8 +112,14 @@ if [ -d /sys/bus/wmi/devices ]; then
 else
   echo "(tidak ada /sys/bus/wmi/devices)"
 fi
-echo "hp_wmi_sensors: $(grep -l hp_wmi_sensors /sys/class/hwmon/hwmon*/name 2>/dev/null | tr '\n' ' ')"
-echo "  (GUID 8F1F6435-... numeric sensor -> fan RPM/suhu di hwmon hp_wmi_sensors)"
+echo "hwmon names : $(for f in /sys/class/hwmon/hwmon*/name; do [ -e "$f" ] && printf '%s ' "$(cat "$f" 2>/dev/null)"; done)"
+echo "  hp_wmi_sensors TIDAK terdaftar di 84DA: GUID 8F1F6435 punya instance_count=0,"
+echo "  wmi.c melewatinya (dmesg: 'has zero instances'). RPM hanya mungkin dari hwmon 'hp'."
+for f in /sys/class/hwmon/hwmon*/fan*_input; do
+  [ -e "$f" ] || continue
+  printf '  RPM %-40s = %s\n' "$f" "$(cat "$f" 2>/dev/null)"
+done
+dmesg 2>/dev/null | grep -iE 'zero instances|No usable fans' | tail -5 || true
 
 hr "HP-WMI PLATFORM"
 for d in /sys/devices/platform/hp-wmi /sys/devices/platform/hp_wmi; do

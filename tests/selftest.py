@@ -9,14 +9,15 @@ subprocess, lalu memeriksa hasil tulisannya. Jalan di Linux maupun Windows:
 Yang diuji:
   1. pwm1 + pwm1_max          -> PWM manual penuh
   2. pwm1 + pwm1_enable       -> auto/max (Omen 15-dc0000 board 84DA/84DB)
+  2b. pwm1_enable read-only  -> perintah gagal jujur, bukan "sukses" palsu
   3. pwm1_enable saja         -> auto/max pada kernel lama (tanpa pwm1)
   4. TUXOV (LED ber-zona)     -> PWM manual lewat pwm1_enable=1
   5. hp::kbd_backlight tunggal-> RGB satu zona (kernel multicolor)
   6. tanpa backend fan        -> pesan jelas + exit code != 0
+  6b. board EC-only 84DA      -> ec_sys 0x95: cool/auto, performance ditolak
   7. pelrun rgb_zones         -> warna saja, brightness/animasi ditolak
   8. hanya platform_profile   -> profil termal sebagai kontrol fan
-  9. board EC-only 84DA       -> ec_sys 0x95: cool/auto, performance ditolak
- 10. decide_fan()             -> histeresis & prioritas safety (fungsi murni)
+  9. decide_fan()             -> histeresis & prioritas safety (fungsi murni)
 """
 from __future__ import annotations
 
@@ -170,6 +171,18 @@ def test_cli(tmp: Path):
     run(r2, "fan", "boost", "off")
     check("fan boost off", (r2 / "sys/class/hwmon/hwmon3/pwm1_enable").read_text().strip(), "2")
 
+    print("varian 2b: driver menolak tulis (pwm1_enable tidak bisa ditulis)")
+    r10 = make_tree(tmp / "b2", "pwm-boost")
+    en = r10 / "sys/class/hwmon/hwmon3/pwm1_enable"
+    en.unlink()
+    en.mkdir()          # direktori: write_text gagal untuk user mana pun
+    p = run(r10, "fan", "max")
+    check("max jujur gagal", p.returncode != 0, True)
+    check("pesan node max", "menolak mode max" in (p.stdout + p.stderr), True)
+    p = run(r10, "fan", "auto")
+    check("auto jujur gagal", p.returncode != 0, True)
+    check("pesan node auto", "menolak nilai 2" in (p.stdout + p.stderr), True)
+
     print("varian 3: pwm1_enable saja (kernel 6.6, tanpa pwm1)")
     r8 = make_tree(tmp / "c2", "enable-only")
     check("status backend", "pwm-boost" in run(r8, "status").stdout, True)
@@ -280,7 +293,7 @@ def test_cli(tmp: Path):
 
 
 def test_policy(tmp: Path):
-    print("varian 10: decide_fan() / interpolate() (fungsi murni)")
+    print("varian 9: decide_fan() / interpolate() (fungsi murni)")
     mod = load_module()
     with open(CONF_SRC / "fan.conf", "rb") as fh:
         cfg = tomllib.load(fh)

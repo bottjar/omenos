@@ -35,8 +35,8 @@ Bukti dari aplikasi OMEN asli: [OMEN-APP-RE.md](OMEN-APP-RE.md).
 
 | Sumber | Cakupan | Catatan |
 |---|---|---|
-| `hp-wmi` bawaan kernel | monitor RPM, `platform_profile`, mode auto/max via `pwm1_enable` | 84DA/84DB: `platform_profile` **tidak terdaftar** (query desain WMI `0x28` gagal); RPM lewat `hp-wmi-sensors` |
-| `hp-wmi-sensors` bawaan kernel | hwmon `hp_wmi_sensors`: RPM kipas + suhu | GUID `8F1F6435…`; tidak tergantung jalur BIOS yang rusak |
+| `hp-wmi` bawaan kernel | monitor RPM + `pwm1_enable` auto/max; `platform_profile` di model lain | 84DA/84DB: `platform_profile` **tidak terdaftar** (query desain WMI `0x28` gagal); RPM lewat hwmon `hp` (`0x10`/`0x11`, belum pasti) |
+| `hp-wmi-sensors` bawaan kernel | hwmon `hp_wmi_sensors`: RPM kipas + suhu | **tidak aktif di 84DA**: GUID `8F1F6435…` punya `instance_count=0`, kernel melewatinya |
 | `ec_sys` (debugfs) | baca/tulis profil termal EC `0x95` | khusus 84DA/84DB; `0x00` balanced, `0x01` performance, `0x02` cool; eksplisit, bukan daemon |
 | TUXOV `hp-wmi-fan-and-backlight-control` | PWM manual 0-255 + RGB 4 zona | manual bergantung model; `pwm1_max` tidak ada, diuji `pwm1_enable=1` |
 | kernel ≥ 6.19/7.x (`hp-wmi` upstream) | PWM manual + keep-alive untuk Omen/Victus baru | belum tentu untuk 15-dc |

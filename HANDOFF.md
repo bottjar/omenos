@@ -27,7 +27,7 @@ melaporkan `IsSwFanControlSupport=False` dan keyboard bukan 4 zona.
 | USB | sudah ditulis 2026-10-29 ke SanDisk Ultra 29 GB (disk 2) mode DD, baca-balik SHA256 identik; **belum** boot-test |
 
 ISO **belum pernah di-boot** di hardware Omen. Semua uji sejauh ini: `bash -n`,
-`shellcheck -S warning`, dan `tests/selftest.py` (9 skenario, semua lolos).
+`shellcheck -S warning`, dan `tests/selftest.py` (11 skenario, semua lolos).
 
 Rilis sekarang dibuat sebagai **draft**, semua asset diunggah, baru
 dipublikasikan (`gh release edit --draft=false`). Build yang dibatalkan saat
@@ -46,12 +46,14 @@ workflow*. Hasil: link gofile di ringkasan run; cadangan artifact/Release.
 - `prime-run` milik sendiri; paket `nvidia-prime` tidak dipakai.
 - **Fan 15-dc**: firmware HP sendiri menyatakan `IsSwFanControlSupport=False`
   (board 84DA, platform Gamora10) → kipas milik EC, tanpa PWM. Kalau kernel
-  kebetulan mengekspos `pwm1_enable`/`pwm1`, backend `pwm-boost` dipakai dengan
-  histeresis ON 76 °C, OFF 68 °C, safety 93 °C, release 87 °C. Kalau tidak ada
-  node sama sekali, daemon keluar dengan pesan jujur + `ec_only_note()`; jalur
-  termal yang benar = `thermald` + governor `intel_pstate` +
-  `power-profiles-daemon`. Satu-satunya tuas firmware adalah mode **Cool**, belum
-  diekspos kernel.
+  mengekspos `pwm1_enable` (hwmon `hp`, butuh WMI `0x10`/`0x11`), backend
+  `pwm-boost` dipakai dengan histeresis ON 76 °C, OFF 68 °C, safety 93 °C,
+  release 87 °C; `pwm1_enable=0` memakai WMI `0x27`, bukan `0x28` yang gagal.
+  Kalau tidak ada node sama sekali, daemon keluar dengan pesan jujur +
+  `ec_only_note()`, dan tuas manual satu-satunya adalah byte EC `0x95`
+  (`sudo omen-control fan cool` lewat `ec_sys write_support=1`). Jalur termal
+  normal tetap `thermald` + governor `intel_pstate` + `power-profiles-daemon`.
+  `hp-wmi-sensors` **tidak** terdaftar di 84DA (`instance_count=0`).
 - **RGB**: SKU `4NT40PA#AR6` hanya punya backlight putih 1 warna (`keyboardType=0`,
   tidak ada perangkat FourZone) → `omen-rgb` berhenti dengan pesan jelas. Backend
   tetap ada untuk model lain: LED kernel `hp::kbd_backlight*` → TUXOV
@@ -79,7 +81,7 @@ overlay/
   airootfs/etc/omen/{fan,rgb}.conf
   airootfs/etc/systemd/system/omen-{fan,rgb}.service
   airootfs/usr/local/bin/{omen-control,omen-setup,omen-install,omen-aur,omen-probe,prime-run}
-tests/selftest.py           # 9 skenario sysfs palsu
+tests/selftest.py           # 11 skenario sysfs palsu
 docs/HARDWARE.md            # matriks model & risiko
 docs/MODEL-15-dc00036tx.md  # detail model ini
 docs/OMEN-APP-RE.md         # hasil bongkar aplikasi OMEN (fan/termal/RGB)
@@ -149,16 +151,19 @@ Lalu dari PC penguji: `ssh omen@<ip>`. Root SSH password diblokir
 ## 6. Yang belum terverifikasi / TODO
 
 - Boot ISO dan instalasi di 15-dc00036tx fisik.
-- Backend fan aktual di 15-dc: apakah kernel mengekspos `pwm1_enable`/`pwm1`
-  sama sekali (daemon memprobe saat start). Firmware bilang tidak ada kontrol
-  software, jadi yang realistis: tidak ada node fan, hanya `fan*_input` (RPM).
+- Backend fan aktual di 15-dc: apakah hwmon `hp` terdaftar (`fan_count > 0` dari
+  WMI `0x10`) dan apakah `pwm1_enable=0` (WMI `0x27`) benar-benar menaikkan
+  kipas. Kalau tidak ada keduanya, satu-satunya tuas = EC `0x95` manual.
+  `hp-wmi-sensors` dipastikan **tidak** ada (`instance_count=0` di `_WDG`).
+- Apakah EC menerima `0x95=0x02` (Cool) tanpa langsung dikembalikan; hasil
+  `sudo omen-control fan cool` di live session yang menentukan.
 - Nama zona LED aktual untuk model lain (TUXOV: `right,center,left,wasd`;
   pelrun: `rgb_zones/`) — tidak berlaku untuk SKU ini yang bukan 4 zona.
 - Kualitas Wi-Fi/BT (`iwlwifi` AC 9560) dan suspend (`mem_sleep_default=deep`).
 - GUI fan/RGB belum ada (CLI + TOML).
 - Undervolt CPU tidak disertakan.
-- Mode termal firmware **Cool** belum bisa dipicu dari Linux (belum ada driver;
-  menulis EC mentah tidak dipakai karena berisiko).
+- Mode termal firmware **Cool** belum otomatis; hanya lewat `fan cool` eksplisit
+  (daemon tidak menulis EC karena risiko bentrok dengan firmware).
 
 ## 7. Lingkungan pembuat
 

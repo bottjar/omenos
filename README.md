@@ -84,16 +84,21 @@ Di Windows: gabungkan dengan `copy /b omenos.iso.part-00+omenos.iso.part-01 omen
 Fan dan RGB **tidak** mengandalkan satu driver tertentu. `omen-control` mendeteksi
 backend yang ada:
 
-1. `hp-wmi` bawaan kernel — `platform_profile` + monitor RPM; pada model Omen
-   yang mengeksposnya hanya auto/max lewat `pwm1_enable` (atau `pwm1`) →
-   kurva on/off dengan histeresis
+1. `hp-wmi` bawaan kernel — hwmon `hp` (RPM) + `pwm1_enable` auto/max; pada
+   board tanpa `platform_profile` pun `pwm1_enable=0` memakai WMI `0x27`
+   (perintah terpisah dari `0x28` yang gagal) → belum dipastikan di 84DA
 2. TUXOV `hp-wmi-fan-and-backlight-control` — PWM manual (0-255) + 4 zona LED
 3. pelrun `hp-omen-linux-module` — 4 zona via `rgb_zones/`
 4. `omen-rgb-keyboard` — RGB + animasi + brightness
 5. `hp::kbd_backlight*` multicolor dari kernel — RGB statis
-6. `ec_sys` + profil EC `0x95` — **khusus board EC-only (84DA/84DB)**: `fan cool`
-   (dan `fan max`) → Cool, `fan auto` → balanced. Hanya lewat perintah eksplisit
-   dengan verifikasi baca ulang; daemon tidak pernah menulis EC.
+6. `ec_sys` + profil EC `0x95` — **khusus board EC-only (84DA/84DB)** saat
+   hwmon `hp` tidak ada: `fan cool` (dan `fan max`) → Cool, `fan auto` →
+   balanced. Hanya lewat perintah eksplisit dengan verifikasi baca ulang;
+   daemon tidak pernah menulis EC.
+
+Catatan 84DA/84DB: `hp-wmi-sensors` **tidak** terdaftar (GUID `8F1F6435…`
+punya `instance_count=0`), jadi `dmesg` akan menampilkan `has zero instances`.
+RPM hanya mungkin dari hwmon `hp`.
 
 Detail jalur Linux (GUID WMI → driver, kenapa `platform_profile` tidak muncul,
 dan risiko tulis EC) ada di [docs/OMEN-APP-RE.md](docs/OMEN-APP-RE.md) §7.
@@ -322,11 +327,12 @@ kunci sendiri dengan `sbctl` lalu tanda tangani `nvidia*.ko` dan modul RGB.
 python3 tests/selftest.py
 ```
 
-Selftest membuat sysfs palsu untuk 10 skenario: PWM manual (`pwm1_max`), auto/max
-15-dc (`pwm1` + `pwm1_enable`), kernel lama (`pwm1_enable` saja), TUXOV (LED 4
-zona + PWM manual tanpa `pwm1_max`), LED tunggal kernel, tanpa backend fan,
-pelrun (`rgb_zones` warna saja), hanya `platform_profile`, board EC-only 84DA
-(`ec_sys` 0x95), dan fungsi murni `decide_fan()`/`interpolate()`/`hotspot()`.
+Selftest membuat sysfs palsu untuk 11 skenario: PWM manual (`pwm1_max`), auto/max
+15-dc (`pwm1` + `pwm1_enable`), driver yang menolak tulis, kernel lama
+(`pwm1_enable` saja), TUXOV (LED 4 zona + PWM manual tanpa `pwm1_max`), LED
+tunggal kernel, tanpa backend fan, board EC-only 84DA (`ec_sys` 0x95), pelrun
+(`rgb_zones` warna saja), hanya `platform_profile`, dan fungsi murni
+`decide_fan()`/`interpolate()`/`hotspot()`.
 
 Hasil yang diverifikasi:
 
@@ -336,6 +342,8 @@ Hasil yang diverifikasi:
 - Backend `platform-profile`: `max` → performance, `auto` → balanced, `quiet` → low-power
 - Board 84DA/EC-only: `fan cool` → `0x95=0x02`, `fan auto` → `0x95=0x00`,
   `fan performance`/persen ditolak dengan pesan firmware
+- Driver menolak tulis (`pwm1_enable` read-only): `fan max`/`auto` exit != 0
+  dengan pesan node, bukan klaim "sukses"
 - 15-dc: 80% → `pwm1_enable=0` (boost), 30% → `pwm1_enable=2` (auto)
 - Kernel lama tanpa `pwm1`: `fan max`/`auto` tetap bekerja lewat `pwm1_enable`
 - TUXOV: 50% → `pwm1=128`, probe manual berhasil
