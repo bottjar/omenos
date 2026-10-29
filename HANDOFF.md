@@ -18,13 +18,13 @@ melaporkan `IsSwFanControlSupport=False` dan keyboard bukan 4 zona.
 |---|---|
 | Hardware | **terverifikasi** 2026-10-29: board 84DA, i7-8750H, GTX 1050 Ti 4 GB, 16 GB single-channel, NVMe 128 GB + HDD 1 TB, Intel AC 9560, ALC295 |
 | ISO | `omenos-2026.10.29-x86_64.iso`, **3.800.973.312 byte** (3,8 GB) |
-| SHA256 | `b4dd00ebed02d344009abad2b29d4d5ca4b5be15157f9d80b72a55957cb70c7f` |
-| Link (permanen) | https://github.com/bottjar/omenos/releases/tag/build-20261029-042850 (2 part + `.sha256`) |
-| Link (1 file) | https://gofile.io/d/TPwfMIvZ (publik, bisa kedaluwarsa) |
-| Build | GitHub Actions `success`, ±12 menit (04:16→04:31 UTC) |
+| SHA256 | `0acad2621025b30c02f0c6ae2efa5b410ad044251a0ba9b19665b1ca96e47d72` |
+| Link (permanen) | https://github.com/bottjar/omenos/releases/tag/build-20261029-052649 (2 part + `.sha256`) |
+| Link (1 file) | https://gofile.io/d/lxl8rJqQ (publik, bisa kedaluwarsa) |
+| Build | GitHub Actions `success`, ±14 menit (05:12→05:28 UTC) |
 | Repo | https://github.com/bottjar/omenos |
-| Run | https://github.com/bottjar/omenos/actions/runs/40816829565 (commit `4d9994c`) |
-| USB | sudah ditulis 2026-10-29 ke SanDisk Ultra 29 GB (disk 2) mode DD, baca-balik SHA256 identik; **belum** boot-test |
+| Run | https://github.com/bottjar/omenos/actions/runs/40822270085 (commit `d2c3b14`) |
+| USB | sudah ditulis 2026-10-29 ke SanDisk Ultra 29 GB (disk 2) mode DD, baca-balik SHA256 identik; berisi build **`4d9994c`** (bukan yang terbaru); **belum** boot-test |
 
 ISO **belum pernah di-boot** di hardware Omen. Semua uji sejauh ini: `bash -n`,
 `shellcheck -S warning`, dan `tests/selftest.py` (11 skenario, semua lolos).
