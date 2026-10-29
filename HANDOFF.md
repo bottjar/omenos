@@ -24,6 +24,7 @@ melaporkan `IsSwFanControlSupport=False` dan keyboard bukan 4 zona.
 | Build | GitHub Actions `success`, ±12 menit (04:16→04:31 UTC) |
 | Repo | https://github.com/bottjar/omenos |
 | Run | https://github.com/bottjar/omenos/actions/runs/40816829565 (commit `4d9994c`) |
+| USB | sudah ditulis 2026-10-29 ke SanDisk Ultra 29 GB (disk 2) mode DD, baca-balik SHA256 identik; **belum** boot-test |
 
 ISO **belum pernah di-boot** di hardware Omen. Semua uji sejauh ini: `bash -n`,
 `shellcheck -S warning`, dan `tests/selftest.py` (9 skenario, semua lolos).
@@ -86,7 +87,10 @@ docs/OMEN-APP-RE.md         # hasil bongkar aplikasi OMEN (fan/termal/RGB)
 
 ## 5. Rencana uji di hardware (belum dilakukan)
 
-1. Tulis ISO ke USB ≥ 8 GB: **Rufus mode DD** atau `dd bs=4M oflag=sync`.
+1. ~~Tulis ISO ke USB~~ **sudah**: 2026-10-29, SanDisk Ultra 29 GB (disk 2),
+   mode DD dari Windows, verifikasi baca-balik SHA256 **identik** dengan ISO.
+   USB sekarang berisi 1 partisi 514 MB (EFI) — normal untuk ISO Arch hibrida;
+   Windows tidak memberi huruf drive. Tidak perlu Rufus (lihat di bawah).
 2. Omen: **F9** → USB **UEFI**; Secure Boot **off**.
 3. Live session: autologin user `omen`, password `omen`.
 4. Uji cepat:
@@ -109,6 +113,23 @@ docs/OMEN-APP-RE.md         # hasil bongkar aplikasi OMEN (fan/termal/RGB)
 6. Boot pertama: `journalctl -u omen-setup-once -f` (driver NVIDIA dari AUR).
    Retry otomatis tiap 15 menit sampai `/var/lib/omen/setup-done` ada.
 7. Setelah driver terpasang: reboot, cek `prime-run glxinfo | grep "OpenGL renderer"`.
+
+### Menulis USB dari Windows tanpa Rufus
+
+Rufus mode DD memang jalur biasa, tetapi tidak wajib. Yang dipakai 2026-10-29
+(berhasil, terverifikasi): PowerShell **sebagai Administrator** → `diskpart`
+`clean` pada disk yang benar → tulis ISO mentah ke `\\.\PhysicalDriveN` →
+baca balik dan bandingkan SHA256. Skrip sementaranya ada di
+`%TEMP%\opencode\write-usb.ps1` dan `verify-usb.ps1` (tidak masuk repo karena
+berisi nomor disk khusus mesin ini).
+
+Pengaman yang dipakai sebelum menghapus: pastikan hanya **satu** disk USB,
+nama mengandung `SanDisk`, ukuran 25–32 GB, dan ukuran ISO tepat
+`3800973312` byte. Jangan pernah menjalankan `clean` pada nomor disk yang belum
+dicek ulang dengan `Get-Disk`.
+
+Hasil tulis: 3.800.973.312 byte dalam ±9,5 menit (≈6,7 MB/s, USB 2.0),
+verifikasi baca-balik 41 detik.
 
 ### Akses jarak jauh untuk pengujian
 
