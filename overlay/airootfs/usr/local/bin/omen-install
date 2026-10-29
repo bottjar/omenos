@@ -178,6 +178,12 @@ fi
 # initramfs: JANGAN tambahkan modul nvidia di sini. Driver belum terpasang;
 # modul yang tidak ada hanya menghasilkan error saat mkinitcpio. omen-setup
 # menambahkannya setelah driver terpasang, lalu menjalankan mkinitcpio -P.
+#
+# i915 (UHD 630) aman ditambahkan sekarang: modulnya ada di linux & linux-lts,
+# dan early KMS menghilangkan kedipan/tearing saat SDDM mulai di panel 1080p
+# sebelum driver NVIDIA dimuat.
+grep -q '^MODULES=.*i915' /etc/mkinitcpio.conf || \
+  sed -i 's/^MODULES=(/MODULES=(i915 /' /etc/mkinitcpio.conf
 mkinitcpio -P
 
 # bootloader: systemd-boot, dua entri kernel.

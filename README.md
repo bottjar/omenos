@@ -19,6 +19,45 @@ ISO, `omen-install`, dan `omen-probe` disesuaikan dengan konfigurasi itu.
 
 ---
 
+## Unduh ISO
+
+**Rilis permanen (disarankan, tanpa login):**
+<https://github.com/bottjar/omenos/releases/latest>
+
+Setiap build menghasilkan satu rilis `build-YYYYMMDD-HHMMSS` berisi:
+
+| Asset | Keterangan |
+|---|---|
+| `omenos-*.iso.part-00`, `.part-01`, … | ISO dipecah <2 GB per file (batas aset GitHub) |
+| `omenos-*.iso.sha256` | checksum ISO utuh |
+
+Rilis juga menyimpan SHA256 + commit sumber di deskripsinya. Build terbaru juga
+diunggah ke **gofile.io** sebagai unduhan satu file; link-nya hanya ada di
+ringkasan run Actions untuk build tersebut (mudah kedaluwarsa, jadi rilis GitHub
+yang jadi acuan).
+
+### Menyiapkan USB
+
+```bash
+# 1. gabungkan bagian-bagian ISO (Linux/macOS/Git Bash)
+cat omenos-*.iso.part-* > omenos.iso
+
+# 2. verifikasi — hasilnya harus sama dengan SHA256 di deskripsi rilis
+sha256sum omenos.iso
+
+# 3. tulis ke USB (Linux) — /dev/sdX HARUS disk USB, bukan partisi
+sudo dd if=omenos.iso of=/dev/sdX bs=4M oflag=sync status=progress
+```
+
+Di Windows: gabungkan dengan `copy /b omenos.iso.part-00+omenos.iso.part-01 omenos.iso`
+(atau PowerShell `Get-Content -AsByteStream`), lalu tulis dengan **Rufus mode DD**
+(bukan ISO mode) atau balenaEtcher. ISO hibrida: bisa boot UEFI maupun BIOS.
+
+> USB 8 GB tidak cukup — ISO ±3,8 GB, pakai USB ≥8 GB (unit ini memakai
+> SanDisk Ultra 29 GB).
+
+---
+
 ## Isi
 
 | Komponen | Implementasi |

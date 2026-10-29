@@ -158,7 +158,26 @@ Untuk driver 580xx, service `nvidia-suspend`, `nvidia-resume`, dan
 `nvidia-hibernate` diaktifkan oleh `omen-setup`; kombinasinya dengan
 `NVreg_PreserveVideoMemoryAllocations=1` mencegah aplikasi crash setelah resume.
 
-## 5. Hal yang belum terverifikasi
+## 5. Memori dan grafis terpadu
+
+16 GB **satu keping** berarti satu kanal memori; ini bukan sesuatu yang bisa
+diperbaiki lewat software, tapi ada dua hal yang membuatnya tidak terlalu
+terasa:
+
+- **zram** (`/etc/systemd/zram-generator.conf`): `min(ram/2, 8 GiB)`, zstd.
+  Tanpa partisi swap di NVMe 128 GB yang ruangnya sempit.
+- **`vm.swappiness=100`** (`/etc/sysctl.d/99-omen-zram.conf`): halaman anonim
+  dikompres ke RAM, bukan menunggu page cache habis. zram tidak menyentuh disk,
+  jadi tidak ada risiko aus flash; `vfs_cache_pressure=50` menjaga cache
+  filesystem saat compile besar.
+
+Panel 1080p60 digerakkan **UHD 630** (`i915`), bukan GTX 1050 Ti. `omen-install`
+menambahkan `i915` ke `MODULES` initramfs (early KMS) supaya tidak ada kedipan
+saat SDDM mulai; `nvidia_drm` baru dimuat `omen-setup` setelah driver 580xx
+terpasang. Decode video memakai `intel-media-driver` (VA-API), jadi tidak
+membangunkan GPU diskrit hanya untuk menonton.
+
+## 6. Hal yang belum terverifikasi
 
 - `board_name` unit ini **84DA** (terverifikasi lewat WMI, bukan 84DB seperti
   dugaan awal dari simulator BIOS).
@@ -168,7 +187,7 @@ Untuk driver 580xx, service `nvidia-suspend`, `nvidia-resume`, dan
   `omen-setup` memasang TUXOV, lalu pelrun sebagai fallback.
 - Watt/thermal limit CPU (PL1/PL2) tidak diubah. Undervolt tidak disertakan.
 
-## 6. Checklist setelah instalasi
+## 7. Checklist setelah instalasi
 
 ```bash
 cat /sys/class/dmi/id/product_name /sys/class/dmi/id/board_name

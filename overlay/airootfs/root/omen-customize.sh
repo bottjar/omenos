@@ -50,6 +50,7 @@ FILES=(
   etc/modprobe.d/nvidia.conf
   etc/modprobe.d/omen-audio.conf
   etc/modprobe.d/omen-wifi.conf
+  etc/sysctl.d/99-omen-zram.conf
   etc/systemd/system/omen-fan.service
   etc/systemd/system/omen-rgb.service
   etc/systemd/zram-generator.conf

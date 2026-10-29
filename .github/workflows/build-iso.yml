@@ -127,25 +127,49 @@ jobs:
           echo "::warning::gofile gagal; pakai artifact GitHub (perlu login)."
           exit 1
 
-      - name: Rilis GitHub (cadangan, unduh tanpa login)
+      - name: Rilis GitHub (link permanen, tanpa login)
         id: release
-        if: always() && steps.meta.outputs.iso != '' && steps.gofile.outputs.link == ''
+        if: always() && steps.meta.outputs.iso != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           iso='${{ steps.meta.outputs.iso }}'
+          name='${{ steps.meta.outputs.name }}'
+          sha='${{ steps.meta.outputs.sha }}'
           tag="build-$(date -u +%Y%m%d-%H%M%S)"
           mkdir -p split
           # batas 2 GiB per asset -> pecah ISO bila perlu
-          split -b 1900M -d -a 2 "$iso" "split/$(basename "$iso").part-"
+          split -b 1900M -d -a 2 "$iso" "split/${name}.part-"
           gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
              --title "OmenOS $tag" \
-             --notes "ISO OmenOS untuk HP OMEN 15-dc00036tx. Gabungkan bagian: \`cat *.part-* > $(basename "$iso")\` lalu verifikasi SHA256."
+             --notes "ISO OmenOS untuk HP OMEN 15-dc00036tx (board 84DA, GTX 1050 Ti).
+
+          | | |
+          |---|---|
+          | File | \`${name}\` |
+          | SHA256 | \`${sha}\` |
+          | Sumber | \`${GITHUB_SHA}\` |
+
+          Asset dipecah <2 GB. Gabungkan dulu sebelum menulis USB:
+
+          \`\`\`bash
+          cat ${name}.part-* > ${name}
+          sha256sum ${name}   # harus sama dengan SHA256 di atas
+          \`\`\`
+
+          Lalu tulis ke USB dengan Rufus mode **DD** (Windows) atau
+          \`dd bs=4M oflag=sync\` (Linux)." \
+             || { echo "::warning::rilis gagal dibuat"; exit 0; }
           gh release upload "$tag" split/* out/*.iso.sha256 --repo "$GITHUB_REPOSITORY"
           url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
           echo "link=$url" >> "$GITHUB_OUTPUT"
-          echo "LINK=$url" >> "$GITHUB_ENV"
+          # jangan menimpa LINK gofile kalau sudah ada: gofile = unduhan langsung
+          if [[ -z "${LINK:-}" ]]; then
+            echo "LINK=$url" >> "$GITHUB_ENV"
+          fi
+          echo "RELEASE=$url" >> "$GITHUB_ENV"
+          echo "release: $url"
 
       - name: Ringkasan
         if: always()
@@ -162,12 +186,22 @@ jobs:
               echo ""
               echo "**SHA256:** \`${{ steps.meta.outputs.sha }}\`"
               echo ""
-              echo "**Link download:** ${LINK:-tidak tersedia — pakai artifact di bawah}"
-              echo ""
+              if [[ -n "${LINK:-}" ]]; then
+                echo "**Unduhan langsung (gofile):** ${LINK}"
+                echo ""
+              fi
+              if [[ -n "${RELEASE:-}" ]]; then
+                echo "**Rilis GitHub (permanen):** ${RELEASE}"
+                echo ""
+              fi
+              if [[ -z "${LINK:-}" && -z "${RELEASE:-}" ]]; then
+                echo "**Link download:** tidak tersedia — pakai artifact di bawah"
+                echo ""
+              fi
               echo "> Unduh, lalu tulis ke USB dengan Rufus mode DD / balenaEtcher."
-              if [[ -n "${LINK:-}" && "$LINK" == *"/releases/tag/"* ]]; then
-                echo "> Rilis ini berisi ISO terpecah (<2 GB per file): unduh semua, lalu"
-                echo "> \`cat *.part-* > ${{ steps.meta.outputs.name }}\` sebelum menulis USB."
+              if [[ -n "${RELEASE:-}" ]]; then
+                echo "> Aset rilis dipecah <2 GB per file: unduh semua, lalu"
+                echo "> \`cat ${{ steps.meta.outputs.name }}.part-* > ${{ steps.meta.outputs.name }}\` sebelum menulis USB."
               fi
             else
               echo "Build gagal sebelum ISO terbentuk. Lihat log langkah \`Build ISO\`."
